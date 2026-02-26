@@ -160,23 +160,19 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             await callback.answer("Попытки исчерпаны", show_alert=True)
 
 # Команда /stats — просмотр всей базы (только для тебя)
-@router.message(F.text.startswith("/stats"))
+@router.message(F.command("stats"))
 async def stats_handler(message: types.Message):
     logging.info(f"Получена команда /stats от {message.from_user.id}")
 
     if message.from_user.id != ADMIN_ID:
         await message.reply("Доступ запрещён. Только админ может смотреть базу.")
-        logging.info("Отказано в доступе к /stats")
         return
-
-    logging.info("Админ подтверждён, начинаем сбор статистики")
 
     cur.execute("SELECT COUNT(*) FROM users")
     total = cur.fetchone()[0]
 
     if total == 0:
         await message.reply("База пустая. Никто ещё не прошёл проверку.")
-        logging.info("База пустая")
         return
 
     cur.execute("""
@@ -189,24 +185,14 @@ async def stats_handler(message: types.Message):
     response = f"📊 Статистика базы:\nВсего пользователей: {total}\n\n"
     response += "Список (от новых к старым):\n\n"
 
-    chunk = ""
-    for i, (uid, un, fn, ja, att) in enumerate(users, 1):
-        un = f"@{un}" if un else "нет username"
-        date = ja[:19]
-        line = f"{i}. {un} ({fn}) — {date} — попыток: {att}\n"
+    for i, (user_id, username, first_name, joined_at, attempts) in enumerate(users, 1):
+        username = f"@{username}" if username else "нет username"
+        date = joined_at[:19]  # обрезаем до даты и времени
+        response += f"{i}. {username} ({first_name}) — {date} — попыток: {attempts}\n"
 
-        if len(response + chunk + line) > 3500:  # лимит Telegram
-            await message.reply(response + chunk, parse_mode="Markdown")
-            response = ""
-            chunk = ""
-        chunk += line
+    await message.reply(response, parse_mode="Markdown")
 
-    if chunk:
-        await message.reply(response + chunk, parse_mode="Markdown")
-
-    logging.info(f"/stats успешно отправлен, всего пользователей: {total}")
-
-# Рассылка /broadcast (только для тебя)
+# Рассылка — команда /broadcast (только для тебя)
 @router.message(F.text.startswith('/broadcast'))
 async def broadcast_handler(message: types.Message):
     logging.info(f"Получена команда /broadcast от {message.from_user.id}")
@@ -240,7 +226,7 @@ async def broadcast_handler(message: types.Message):
         try:
             await bot.send_message(user_id, text, parse_mode="Markdown")
             success += 1
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.5)  # задержка
         except Exception as e:
             failed += 1
             logging.warning(f"Не удалось отправить {user_id}: {e}")
