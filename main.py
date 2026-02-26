@@ -15,9 +15,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 TOKEN = "8656659502:AAEr1hajHfDs0y-iqjoAWG6qT0Hw7P4IYpI"
 CHANNEL_LINK = "https://t.me/tolkogori"
 CHAT_LINK = "https://t.me/tolkogori_chat"
-PHOTO_PATH = "welcome_photo.jpg"  # приветственное фото (или None)
+PHOTO_PATH = "welcome_photo.jpg" # приветственное фото (или None)
 
-ADMIN_ID = 7051676412  # твой ID — только ты можешь /stats, /broadcast и /getdb
+ADMIN_ID = 7051676412 # твой ID — только ты можешь /stats, /broadcast и /getdb
 
 # База данных
 conn = sqlite3.connect("subscribers.db")
@@ -72,7 +72,7 @@ async def start_handler(message: types.Message, state: FSMContext):
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🚀 Пройти проверку", callback_data="start_captcha")
+        InlineKeyboardButton(text="🚀 ПОДПИСАТЬСЯ", callback_data="start_captcha")
     ]])
 
     if PHOTO_PATH:
@@ -92,7 +92,6 @@ async def start_handler(message: types.Message, state: FSMContext):
 @router.callback_query(F.data == "start_captcha")
 async def start_captcha(callback: types.CallbackQuery, state: FSMContext):
     question, correct, variants = generate_task()
-
     await state.update_data(
         correct=correct,
         attempts=3,
@@ -100,12 +99,10 @@ async def start_captcha(callback: types.CallbackQuery, state: FSMContext):
         variants=variants,
         attempts_used=0
     )
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=str(v), callback_data=f"captcha_{v}") for v in variants[:2]],
         [InlineKeyboardButton(text=str(v), callback_data=f"captcha_{v}") for v in variants[2:]]
     ])
-
     await callback.message.reply(
         f"Решите пример:\n\n<b>{question}</b>\n\n"
         "Выберите правильный ответ\n"
@@ -127,16 +124,13 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
     except ValueError:
         await callback.answer("Ошибка выбора", show_alert=True)
         return
-
     if answer == correct:
         save_user(callback.from_user, attempts_used + 1)
-
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🎁 НАШ ТЕЛЕГРАМ КАНАЛ ТУТ 🎁", url=CHANNEL_LINK)],
             [InlineKeyboardButton(text="💬 НАШ ЧАТ ТУТ 💬", url=CHAT_LINK)],
             [InlineKeyboardButton(text="🟢 KICK СТРИМЫ НА KICK 🟢", url="https://vtgori.pro/kick")]
         ])
-
         await callback.message.reply(
             "✅ Отлично! Вы прошли проверку.\n"
             "Добро пожаловать в Телеграм канал стримеров ВЫШЕ ТОЛЬКО ГОРЫ!\n\n"
@@ -150,7 +144,6 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
         attempts -= 1
         attempts_used += 1
         await state.update_data(attempts=attempts, attempts_used=attempts_used)
-
         if attempts > 0:
             await callback.answer(f"Неверно • Осталось попыток: {attempts}", show_alert=True)
         else:
@@ -186,7 +179,8 @@ async def stats_handler(message: types.Message):
     """)
     users = cur.fetchall()
 
-    response = f"📊 Статистика базы:\nВсего пользователей: {total}\n\n"
+    response = f"📊 Статистика базы:\n"
+    response += f"Всего уникальных пользователей: {total}\n\n"
     response += "Список (от новых к старым):\n\n"
 
     chunk = ""
@@ -205,6 +199,27 @@ async def stats_handler(message: types.Message):
         await message.reply(response + chunk, parse_mode="Markdown")
 
     logging.info(f"/stats успешно отправлен, всего пользователей: {total}")
+
+# Команда /getdb — скачать файл базы (только для тебя)
+@router.message(F.command("getdb"))
+async def get_db_handler(message: types.Message):
+    logging.info(f"Получена команда /getdb от {message.from_user.id}")
+
+    if message.from_user.id != ADMIN_ID:
+        await message.reply("Доступ запрещён.")
+        return
+
+    try:
+        await message.reply_document(
+            document=FSInputFile("subscribers.db"),
+            caption="Текущая база subscribers.db (все, кто прошёл капчу)"
+        )
+        logging.info("База отправлена админу")
+    except FileNotFoundError:
+        await message.reply("База ещё пустая (никто не прошёл капчу).")
+    except Exception as e:
+        await message.reply("Ошибка отправки базы.")
+        logging.error(f"Ошибка: {e}")
 
 # Рассылка — команда /broadcast (только для тебя)
 @router.message(F.text.startswith('/broadcast'))
