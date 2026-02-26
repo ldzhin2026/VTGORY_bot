@@ -179,13 +179,13 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
         save_user(callback.from_user, attempts_used + 1)
         
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🎁 КАНАЛ", url=CHANNEL_LINK)],
-            [InlineKeyboardButton(text="💬 ЧАТ", url=CHAT_LINK)],
-            [InlineKeyboardButton(text="🟢 KICK", url="https://vtgori.pro/kick")]
+            [InlineKeyboardButton(text="🎁 ТЕЛЕГРАМ КАНАЛ", url=CHANNEL_LINK)],
+            [InlineKeyboardButton(text="💬 НАШ ЧАТ", url=CHAT_LINK)],
+            [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")]
         ])
         
         await callback.message.reply(
-            "✅ Пройдено!\nДобро пожаловать!",
+            "✅ Пройдено!\nДобро пожаловать на канал стримеров ВЫШЕ ТОЛЬКО ГОРЫ!",
             reply_markup=kb,
             parse_mode="Markdown"
         )
@@ -346,3 +346,4 @@ if __name__ == "__main__":
         if 'conn' in globals():
             conn.close()
             logger.info("База закрыта")
+
