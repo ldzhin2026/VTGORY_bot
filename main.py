@@ -204,6 +204,102 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             await callback.answer("Исчерпано", show_alert=True)
 
 
+@router.message(F.text.startswith("/stats"))
+async def stats_handler(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.reply("Доступ запрещён.")
+        return
+
+    try:
+        # 1. Проверяем, существует ли файл
+        if not os.path.exists(DB_PATH):
+            await message.reply("Файл базы не найден: " + DB_PATH)
+            logger.error(f"База не найдена: {DB_PATH}")
+            return
+
+        size = os.path.getsize(DB_PATH)
+        await message.reply(f"Файл базы найден, размер: {size} байт")
+
+        # 2. Пробуем простой COUNT
+        cur.execute("SELECT COUNT(*) FROM users")
+        total = cur.fetchone()[0]
+        await message.reply(f"Всего записей в таблице users: {total}")
+
+        if total == 0:
+            await message.reply("База пустая — никто ещё не прошёл капчу.")
+            return
+
+        # 3. Пробуем выбрать данные
+        cur.execute("""
+            SELECT user_id, username, first_name, joined_at, attempts_used
+            FROM users
+            ORDER BY joined_at DESC
+            LIMIT 5
+        """)
+        rows = cur.fetchall()
+
+        if not rows:
+            await message.reply("Записей нет, хотя COUNT > 0 — странно")
+            return
+
+        # 4. Формируем короткий отчёт (чтобы не превысить лимит)
+        text = f"📊 Последние 5 пользователей (всего {total}):\n\n"
+        for i, (uid, un, fn, ja, att) in enumerate(rows, 1):
+            un = f"@{un}" if un else "нет"
+            date = ja[:19].replace("T", " ") if ja else "?"
+            text += f"{i}. {un} ({fn or '?'}) — {date} — попыток: {att}\n"
+
+        await message.reply(text)
+
+    except sqlite3.Error as e:
+        err_msg = f"Ошибка SQLite: {e}\nПуть к базе: {DB_PATH}"
+        logger.error(err_msg, exc_info=True)
+        await message.reply(err_msg)
+    except Exception as e:
+        err_msg = f"Неизвестная ошибка в /stats: {type(e).__name__} → {e}"
+        logger.error(err_msg, exc_info=True)
+        await message.reply(err_msg)
+
+
+@router.message(F.text.startswith("/broadcast"))
+async def broadcast_handler(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        await message.reply("Доступ запрещён.")
+        return
+    
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.reply("Используй: /broadcast текст сообщения")
+        return
+    
+    text = parts[1].strip()
+    await message.reply("Рассылка запущена...")
+    
+    cur.execute("SELECT user_id FROM users")
+    users = cur.fetchall()
+    
+    if not users:
+        await message.reply("База пуста.")
+        return
+    
+    success = failed = 0
+    for (user_id,) in users:
+        try:
+            await bot.send_message(user_id, text, parse_mode="Markdown")
+            success += 1
+            await asyncio.sleep(0.4)
+        except Exception as e:
+            failed += 1
+            logging.warning(f"Не отправлено {user_id}: {e}")
+    
+    await message.reply(
+        f"Рассылка завершена:\n"
+        f"Успешно: {success}\n"
+        f"Не удалось: {failed}\n"
+        f"Всего: {len(users)}"
+    )
+
+
 @router.message(F.text.startswith("/getdb"))
 async def get_db_handler(message: types.Message):
     if message.from_user.id != ADMIN_ID:
