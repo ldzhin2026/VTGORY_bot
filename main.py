@@ -15,8 +15,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 TOKEN = "8656659502:AAEr1hajHfDs0y-iqjoAWG6qT0Hw7P4IYpI"
 CHANNEL_LINK = "https://t.me/tolkogori"
 CHAT_LINK = "https://t.me/tolkogori_chat"
-PHOTO_PATH = "welcome_photo.jpg"  # приветственное фото (или None)
-ADMIN_ID = 7051676412  # твой ID — только ты можешь /stats и /broadcast
+PHOTO_PATH = "welcome_photo.jpg"  # или None
+
+ADMIN_ID = 7051676412  # твой ID
 
 # База данных
 conn = sqlite3.connect("subscribers.db")
@@ -138,7 +139,7 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
 
         await callback.message.reply(
             "✅ Отлично! Вы прошли проверку.\n"
-            "Добро пожаловать в Телеграм канал стримеров ВЫШЕ ТОЛЬКО ГОРЫ!\n\n"
+            "Добро пожаловать в @tolkogori!\n\n"
             "Основные ссылки:",
             reply_markup=kb,
             parse_mode="Markdown"
@@ -159,34 +160,53 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             await callback.answer("Попытки исчерпаны", show_alert=True)
 
 # Команда /stats — просмотр всей базы (только для тебя)
-@router.message(F.command("stats"))
+@router.message(F.text.startswith("/stats"))
 async def stats_handler(message: types.Message):
     logging.info(f"Получена команда /stats от {message.from_user.id}")
 
     if message.from_user.id != ADMIN_ID:
         await message.reply("Доступ запрещён. Только админ может смотреть базу.")
+        logging.info("Отказано в доступе к /stats")
         return
+
+    logging.info("Админ подтверждён, начинаем сбор статистики")
 
     cur.execute("SELECT COUNT(*) FROM users")
     total = cur.fetchone()[0]
 
     if total == 0:
         await message.reply("База пустая. Никто ещё не прошёл проверку.")
+        logging.info("База пустая")
         return
 
-    cur.execute("SELECT user_id, username, first_name, joined_at, attempts_used FROM users ORDER BY joined_at DESC")
+    cur.execute("""
+        SELECT user_id, username, first_name, joined_at, attempts_used 
+        FROM users 
+        ORDER BY joined_at DESC
+    """)
     users = cur.fetchall()
 
-    response = f"📊 Статистика базы:\nВсего пользователей: {total}\n\nСписок (от новых к старым):\n\n"
+    response = f"📊 Статистика базы:\nВсего пользователей: {total}\n\n"
+    response += "Список (от новых к старым):\n\n"
 
+    chunk = ""
     for i, (uid, un, fn, ja, att) in enumerate(users, 1):
-        un = f"@{un}" if un else "нет"
+        un = f"@{un}" if un else "нет username"
         date = ja[:19]
-        response += f"{i}. {un} ({fn}) — {date} — попыток: {att}\n"
+        line = f"{i}. {un} ({fn}) — {date} — попыток: {att}\n"
 
-    await message.reply(response, parse_mode="Markdown")
+        if len(response + chunk + line) > 3500:  # лимит Telegram
+            await message.reply(response + chunk, parse_mode="Markdown")
+            response = ""
+            chunk = ""
+        chunk += line
 
-# Рассылка — команда /broadcast (только для тебя)
+    if chunk:
+        await message.reply(response + chunk, parse_mode="Markdown")
+
+    logging.info(f"/stats успешно отправлен, всего пользователей: {total}")
+
+# Рассылка /broadcast (только для тебя)
 @router.message(F.text.startswith('/broadcast'))
 async def broadcast_handler(message: types.Message):
     logging.info(f"Получена команда /broadcast от {message.from_user.id}")
