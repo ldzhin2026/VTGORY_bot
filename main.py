@@ -3,7 +3,7 @@ import random
 import logging
 import sqlite3
 from datetime import datetime
-import os  # для проверки файла и пути
+import os  # добавлено для проверки файла (обязательно!)
 
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import CommandStart
@@ -17,7 +17,6 @@ TOKEN = "8656659502:AAEr1hajHfDs0y-iqjoAWG6qT0Hw7P4IYpI"
 CHANNEL_LINK = "https://t.me/tolkogori"
 CHAT_LINK = "https://t.me/tolkogori_chat"
 PHOTO_PATH = "welcome_photo.jpg" # приветственное фото (или None)
-
 ADMIN_ID = 7051676412 # твой ID — только ты можешь /stats, /broadcast и /getdb
 
 # Путь к базе на постоянном Volume (Railway) — ТВОЙ Mount path
@@ -157,62 +156,51 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
 @router.message(F.text.startswith("/stats"))
 async def stats_handler(message: types.Message):
     logging.info(f"Получена команда /stats от {message.from_user.id}")
-
     if message.from_user.id != ADMIN_ID:
         await message.reply("Доступ запрещён. Только админ может смотреть базу.")
         logging.info("Отказано в доступе к /stats")
         return
-
     logging.info("Админ подтверждён, начинаем сбор статистики")
-
     cur.execute("SELECT COUNT(*) FROM users")
     total = cur.fetchone()[0]
-
     if total == 0:
         await message.reply("База пустая. Никто ещё не прошёл проверку.")
         logging.info("База пустая")
         return
-
     cur.execute("""
-        SELECT user_id, username, first_name, joined_at, attempts_used 
-        FROM users 
+        SELECT user_id, username, first_name, joined_at, attempts_used
+        FROM users
         ORDER BY joined_at DESC
     """)
     users = cur.fetchall()
-
     response = f"📊 Статистика базы:\n"
     response += f"Всего уникальных пользователей: {total}\n\n"
     response += "Список (от новых к старым):\n\n"
-
     chunk = ""
     for i, (uid, un, fn, ja, att) in enumerate(users, 1):
         un = f"@{un}" if un else "нет username"
         date = ja[:19]
         line = f"{i}. {un} ({fn}) — {date} — попыток: {att}\n"
-
-        if len(response + chunk + line) > 3500:  # лимит Telegram
+        if len(response + chunk + line) > 3500: # лимит Telegram
             await message.reply(response + chunk, parse_mode="Markdown")
             response = ""
             chunk = ""
         chunk += line
-
     if chunk:
         await message.reply(response + chunk, parse_mode="Markdown")
-
     logging.info(f"/stats успешно отправлен, всего пользователей: {total}")
 
 # Команда /getdb — скачать файл базы (только для тебя)
 @router.message(F.command("getdb"))
 async def get_db_handler(message: types.Message):
     logging.info(f"Получена команда /getdb от {message.from_user.id}")
-
     if message.from_user.id != ADMIN_ID:
         await message.reply("Доступ запрещён.")
         return
 
-    db_file = "/app/data/subscribers.db"  # ← ТВОЙ Mount path из Volume
+    db_file = "/app/data/subscribers.db"  # ← правильный путь на Volume
 
-    logging.info(f"Попытка отправки базы: {db_file}")
+    logging.info(f"Попытка отправки базы по пути: {db_file}")
 
     try:
         # Проверка существования файла
@@ -243,33 +231,25 @@ async def get_db_handler(message: types.Message):
 @router.message(F.text.startswith('/broadcast'))
 async def broadcast_handler(message: types.Message):
     logging.info(f"Получена команда /broadcast от {message.from_user.id}")
-
     if message.from_user.id != ADMIN_ID:
         await message.reply("Доступ запрещён. Только админ может рассылать.")
         return
-
     if len(message.text.split()) < 2:
         await message.reply("Используй: /broadcast текст для рассылки")
         return
-
     text = message.text.split(maxsplit=1)[1].strip()
     if not text:
         await message.reply("Напиши текст после /broadcast")
         return
-
     await message.reply("Рассылка начата...")
-
     cur.execute("SELECT user_id FROM users")
     users = cur.fetchall()
-
     if not users:
         await message.reply("В базе никого нет. Пройди капчу сам для теста.")
         return
-
     success = 0
     failed = 0
-
-    for (user_id,) in users:
+    for (user_id, ) in users:
         try:
             await bot.send_message(user_id, text, parse_mode="Markdown")
             success += 1
@@ -277,17 +257,12 @@ async def broadcast_handler(message: types.Message):
         except Exception as e:
             failed += 1
             logging.warning(f"Не удалось отправить {user_id}: {e}")
-
-    await message.reply(
-        f"Рассылка завершена!\n"
-        f"Отправлено: {success}\n"
-        f"Не удалось: {failed}\n"
-        f"Всего в базе: {len(users)}"
-    )
-
+    await message.reply(f"Рассылка завершена!\n"
+                        f"Отправлено: {success}\n"
+                        f"Не удалось: {failed}\n"
+                        f"Всего в базе: {len(users)}")
 async def main():
     await dp.start_polling(bot)
-
 if __name__ == "__main__":
     try:
         asyncio.run(main())
