@@ -72,7 +72,7 @@ async def start_handler(message: types.Message, state: FSMContext):
     )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🚀 Пройти проверку", callback_data="start_captcha")
+        InlineKeyboardButton(text="🚀 ПОДПИСАТЬСЯ", callback_data="start_captcha")
     ]])
 
     if PHOTO_PATH:
@@ -246,3 +246,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     finally:
         conn.close()
+
