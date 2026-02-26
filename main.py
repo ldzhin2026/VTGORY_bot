@@ -139,7 +139,7 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
 
         await callback.message.reply(
             "✅ Отлично! Вы прошли проверку.\n"
-            "Добро пожаловать в @tolkogori!\n\n"
+            "Добро пожаловать на канал стримеров ВЫШЕ ТОЛЬКО ГОРЫ!\n\n"
             "Основные ссылки:",
             reply_markup=kb,
             parse_mode="Markdown"
@@ -246,4 +246,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     finally:
         conn.close()
+
 
