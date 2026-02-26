@@ -142,16 +142,15 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
         save_user(callback.from_user, attempts_used + 1)
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="🎁 НАШ ТЕЛЕГРАМ КАНАЛ ТУТ 🎁",
-                                     url=CHANNEL_LINK)
-            ],
+            [InlineKeyboardButton(text="🎁 НАШ ТЕЛЕГРАМ КАНАЛ ТУТ 🎁", url=CHANNEL_LINK)],
             [InlineKeyboardButton(text="💬 НАШ ЧАТ ТУТ 💬", url=CHAT_LINK)],
+            # ← НОВАЯ КНОПКА ДОБАВЛЕНА ЗДЕСЬ
+            [InlineKeyboardButton(text="K🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")]
         ])
 
         await callback.message.reply(
             "✅ Отлично! Вы прошли проверку.\n"
-            "Добро пожаловать в @tolkogori!\n\n"
+            "Добро пожаловать в Телеграм канал стримеров ВЫШЕ ТОЛЬКО ГОРЫ!\n\n"
             "Основные ссылки:",
             reply_markup=kb,
             parse_mode="Markdown")
@@ -226,3 +225,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     finally:
         conn.close()
+
