@@ -3,6 +3,7 @@ import random
 import logging
 import sqlite3
 from datetime import datetime
+import os  # для пути к базе на Volume
 
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import CommandStart
@@ -15,11 +16,12 @@ from aiogram.fsm.storage.memory import MemoryStorage
 TOKEN = "8656659502:AAEr1hajHfDs0y-iqjoAWG6qT0Hw7P4IYpI"
 CHANNEL_LINK = "https://t.me/tolkogori"
 CHAT_LINK = "https://t.me/tolkogori_chat"
-PHOTO_PATH = "welcome_photo.jpg" # приветственное фото (или None)
-ADMIN_ID = 7051676412 # твой ID — только ты можешь /stats, /broadcast и /getdb
+PHOTO_PATH = "welcome_photo.jpg"  # приветственное фото (или None)
+
+ADMIN_ID = 7051676412  # твой ID — только ты можешь /stats, /broadcast и /getdb
 
 # Путь к базе на постоянном Volume (Railway)
-DB_PATH = "/app/data/subscribers.db"  # ← это твой Mount path
+DB_PATH = "/app/data/subscribers.db"  # ← твой Mount path из настроек Volume
 
 # База данных
 conn = sqlite3.connect(DB_PATH)
@@ -208,19 +210,29 @@ async def get_db_handler(message: types.Message):
         await message.reply("Доступ запрещён.")
         return
 
+    db_file = "/app/data/subscribers.db"  # ← правильный путь на Volume
+
     try:
-        db_file = "/app/data/subscribers.db"  # ← правильный путь на Volume
+        # Проверка существования файла
+        if not os.path.exists(db_file):
+            await message.reply("Файл базы не найден по пути /app/data/subscribers.db. Проверь Volume.")
+            logging.info("Файл не найден")
+            return
+
+        file_size = os.path.getsize(db_file)
+        logging.info(f"Файл найден, размер: {file_size} байт")
+
         await message.reply_document(
             document=FSInputFile(db_file),
-            caption="Текущая база subscribers.db (все, кто прошёл капчу)"
+            caption=f"Текущая база subscribers.db (размер: {file_size} байт)"
         )
         logging.info("База успешно отправлена админу")
     except FileNotFoundError:
-        await message.reply("База ещё пустая (никто не прошёл капчу) или путь к файлу неправильный. Проверь Volume и путь /app/data/subscribers.db")
-        logging.info("Файл базы не найден по пути /app/data/subscribers.db")
+        await message.reply("База ещё пустая или путь неправильный. Пройди капчу.")
+        logging.info("Файл базы не найден")
     except Exception as e:
         await message.reply("Ошибка отправки базы. Проверь логи.")
-        logging.error(f"Ошибка отправки /getdb: {e}")
+        logging.error(f"Ошибка /getdb: {e}")
 
 # Рассылка — команда /broadcast (только для тебя)
 @router.message(F.text.startswith('/broadcast'))
