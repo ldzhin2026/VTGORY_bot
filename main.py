@@ -18,16 +18,14 @@ from aiogram.fsm.storage.memory import MemoryStorage
 TOKEN = "8656659502:AAEr1hajHfDs0y-iqjoAWG6qT0Hw7P4IYpI"
 CHANNEL_LINK = "https://t.me/tolkogori"
 CHAT_LINK = "https://t.me/tolkogori_chat"
-PHOTO_PATH = "welcome_photo.jpg"          # приветственное фото (или None)
-ADMIN_ID = 7051676412                     # твой Telegram ID
+PHOTO_PATH = "welcome_photo.jpg"          # если файла нет — будет просто текст
+ADMIN_ID = 7051676412
 
-# Путь к базе — используем volume /app/data
-DB_DIR = "/app/data"
-DB_FILENAME = "subscribers.db"
-DB_PATH = os.path.join(DB_DIR, DB_FILENAME)
+# Путь к базе — Railway volume
+DB_PATH = "/app/data/subscribers.db"
 
-# Создаём папку, если её нет (на всякий случай)
-os.makedirs(DB_DIR, exist_ok=True)
+# Создаём директорию, если её нет
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 # ────────────────────────────────────────────────
 # Логирование
@@ -39,27 +37,33 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
+logger = logging.getLogger(__name__)
+
 # ────────────────────────────────────────────────
-# Подключение к базе
+# Подключение к базе (с защитой)
 # ────────────────────────────────────────────────
 
-conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-cur = conn.cursor()
-
-cur.execute('''CREATE TABLE IF NOT EXISTS users (
-    user_id     INTEGER PRIMARY KEY,
-    username    TEXT,
-    first_name  TEXT,
-    joined_at   TEXT,
-    attempts_used INTEGER DEFAULT 0
-)''')
-conn.commit()
-
-logging.info(f"База данных подключена: {DB_PATH}")
-logging.info(f"Файл существует? {os.path.exists(DB_PATH)}")
-if os.path.exists(DB_PATH):
-    size = os.path.getsize(DB_PATH)
-    logging.info(f"Размер базы: {size} байт ({size / 1024:.2f} КБ)")
+try:
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    cur = conn.cursor()
+    
+    cur.execute('''CREATE TABLE IF NOT EXISTS users (
+        user_id       INTEGER PRIMARY KEY,
+        username      TEXT,
+        first_name    TEXT,
+        joined_at     TEXT,
+        attempts_used INTEGER DEFAULT 0
+    )''')
+    conn.commit()
+    
+    logger.info(f"База подключена: {DB_PATH}")
+    logger.info(f"Файл существует: {os.path.exists(DB_PATH)}")
+    if os.path.exists(DB_PATH):
+        size = os.path.getsize(DB_PATH)
+        logger.info(f"Размер базы: {size} байт ({size / 1024:.2f} КБ)")
+except Exception as e:
+    logger.error(f"ОШИБКА при создании/подключении базы: {type(e).__name__} → {e}", exc_info=True)
+    raise  # падаем сразу, чтобы увидеть ошибку в логах Railway
 
 # ────────────────────────────────────────────────
 # Aiogram
@@ -91,46 +95,47 @@ def generate_task():
 def save_user(user: types.User, attempts_used: int):
     now = datetime.now().isoformat()
     username = user.username if user.username else None
+    
     cur.execute('''INSERT OR REPLACE INTO users
                    (user_id, username, first_name, joined_at, attempts_used)
                    VALUES (?, ?, ?, ?, ?)''',
                 (user.id, username, user.first_name, now, attempts_used))
     conn.commit()
-    logging.info(f"Сохранён пользователь {user.id} (@{username or 'нет'}) — попыток: {attempts_used}")
+    
+    logger.info(f"Сохранён: {user.id} (@{username or 'нет'}) — попыток: {attempts_used}")
 
 # ────────────────────────────────────────────────
 # Хендлеры
 # ────────────────────────────────────────────────
 
-@router.message(F.text.startswith("/start"))
+@router.message(CommandStart())
 async def start_handler(message: types.Message, state: FSMContext):
-    logging.info(f"/start от {message.from_user.id}")
+    logger.info(f"/start от {message.from_user.id}")
     
     text = (
         "📜 **Правила канала ВЫШЕ ТОЛЬКО ГОРЫ**\n\n"
         "• Обязательная подписка на канал\n"
-        "• Запрещены: спам, оскорбления, реклама без разрешения\n"
-        "• Нажимая кнопку ниже, вы соглашаетесь с правилами\n\n"
-        "Пройдите простую проверку ↓"
+        "• Запрещены: спам, оскорбления, реклама без разрешения\n\n"
+        "Пройдите проверку ↓"
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="🚀 ПОДПИСАТЬСЯ", callback_data="start_captcha")
     ]])
     
-    if PHOTO_PATH and os.path.exists(PHOTO_PATH):
-        try:
+    try:
+        if PHOTO_PATH and os.path.isfile(PHOTO_PATH):
             await message.answer_photo(
                 photo=FSInputFile(PHOTO_PATH),
                 caption=text,
                 reply_markup=kb,
                 parse_mode="Markdown"
             )
-            return
-        except Exception as e:
-            logging.warning(f"Не удалось отправить фото: {e}")
-    
-    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+        else:
+            await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"Ошибка отправки фото: {e}")
+        await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
 
 @router.callback_query(F.data == "start_captcha")
@@ -140,7 +145,6 @@ async def start_captcha(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(
         correct=correct,
         attempts=3,
-        question=question,
         variants=variants,
         attempts_used=0
     )
@@ -151,141 +155,63 @@ async def start_captcha(callback: types.CallbackQuery, state: FSMContext):
     ])
     
     await callback.message.reply(
-        f"Решите пример:\n\n<b>{question}</b>\n\n"
-        "Выберите правильный ответ\n"
-        "У вас 3 попытки",
+        f"<b>Решите:</b>\n\n{question}\n\nВыберите ответ (3 попытки)",
         reply_markup=kb,
         parse_mode="HTML"
     )
-    await callback.answer("Капча запущена!")
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("captcha_"))
 async def check_answer(callback: types.CallbackQuery, state: FSMContext):
     data = await state.get_data()
-    correct = data["correct"]
+    correct = data.get("correct")
     attempts = data.get("attempts", 3)
     attempts_used = data.get("attempts_used", 0) + (3 - attempts)
     
-    answer_str = callback.data.split("_")[1]
     try:
-        answer = int(answer_str)
-    except ValueError:
-        await callback.answer("Ошибка выбора", show_alert=True)
+        answer = int(callback.data.split("_")[1])
+    except:
+        await callback.answer("Ошибка", show_alert=True)
         return
     
     if answer == correct:
         save_user(callback.from_user, attempts_used + 1)
         
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🎁 НАШ ТЕЛЕГРАМ КАНАЛ ТУТ 🎁", url=CHANNEL_LINK)],
-            [InlineKeyboardButton(text="💬 НАШ ЧАТ ТУТ 💬", url=CHAT_LINK)],
-            [InlineKeyboardButton(text="🟢 KICK СТРИМЫ НА KICK 🟢", url="https://vtgori.pro/kick")]
+            [InlineKeyboardButton(text="🎁 КАНАЛ", url=CHANNEL_LINK)],
+            [InlineKeyboardButton(text="💬 ЧАТ", url=CHAT_LINK)],
+            [InlineKeyboardButton(text="🟢 KICK", url="https://vtgori.pro/kick")]
         ])
         
         await callback.message.reply(
-            "✅ Отлично! Вы прошли проверку.\n"
-            "Добро пожаловать в Телеграм канал стримеров ВЫШЕ ТОЛЬКО ГОРЫ!\n\n"
-            "Основные ссылки:",
+            "✅ Пройдено!\nДобро пожаловать!",
             reply_markup=kb,
             parse_mode="Markdown"
         )
         await state.clear()
-        await callback.answer("Добро пожаловать!")
+        await callback.answer("Успех!")
     else:
         attempts -= 1
         attempts_used += 1
         await state.update_data(attempts=attempts, attempts_used=attempts_used)
         
         if attempts > 0:
-            await callback.answer(f"Неверно • Осталось попыток: {attempts}", show_alert=True)
+            await callback.answer(f"Неверно • Осталось: {attempts}", show_alert=True)
         else:
-            await callback.message.reply("❌ Попытки закончились.\nПопробуйте снова — /start")
+            await callback.message.reply("❌ Попытки кончились. /start")
             await state.clear()
-            await callback.answer("Попытки исчерпаны", show_alert=True)
-
-
-@router.message(F.text.startswith("/stats"))
-async def stats_handler(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.reply("Доступ запрещён.")
-        return
-    
-    cur.execute("SELECT COUNT(*) FROM users")
-    total = cur.fetchone()[0]
-    
-    if total == 0:
-        await message.reply("База пустая.")
-        return
-    
-    cur.execute("""
-        SELECT user_id, username, first_name, joined_at, attempts_used
-        FROM users
-        ORDER BY joined_at DESC
-    """)
-    users = cur.fetchall()
-    
-    response = f"📊 Всего пользователей: {total}\n\n"
-    for i, (uid, un, fn, ja, att) in enumerate(users, 1):
-        un = f"@{un}" if un else "нет"
-        date = ja[:19].replace("T", " ")
-        response += f"{i}. {un} ({fn}) — {date} — попыток: {att}\n"
-        
-        if len(response) > 3800:
-            await message.reply(response, parse_mode="Markdown")
-            response = ""
-    
-    if response:
-        await message.reply(response, parse_mode="Markdown")
-
-
-@router.message(F.text.startswith("/broadcast"))
-async def broadcast_handler(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        await message.reply("Доступ запрещён.")
-        return
-    
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2 or not parts[1].strip():
-        await message.reply("Используй: /broadcast текст сообщения")
-        return
-    
-    text = parts[1].strip()
-    await message.reply("Рассылка запущена...")
-    
-    cur.execute("SELECT user_id FROM users")
-    users = cur.fetchall()
-    
-    if not users:
-        await message.reply("База пуста.")
-        return
-    
-    success = failed = 0
-    for (user_id,) in users:
-        try:
-            await bot.send_message(user_id, text, parse_mode="Markdown")
-            success += 1
-            await asyncio.sleep(0.4)
-        except Exception as e:
-            failed += 1
-            logging.warning(f"Не отправлено {user_id}: {e}")
-    
-    await message.reply(
-        f"Рассылка завершена:\n"
-        f"Успешно: {success}\n"
-        f"Не удалось: {failed}\n"
-        f"Всего: {len(users)}"
-    )
+            await callback.answer("Исчерпано", show_alert=True)
 
 
 @router.message(F.text.startswith("/getdb"))
 async def get_db_handler(message: types.Message):
     if message.from_user.id != ADMIN_ID:
-        await message.reply("Только админ может скачать базу.")
+        await message.reply("Нет доступа")
         return
     
     if not os.path.exists(DB_PATH):
-        await message.reply("Файл базы не найден.")
+        await message.reply("База не найдена")
         return
     
     size_kb = os.path.getsize(DB_PATH) / 1024
@@ -296,9 +222,8 @@ async def get_db_handler(message: types.Message):
             document=FSInputFile(DB_PATH),
             caption=caption
         )
-        logging.info(f"База отправлена админу {message.from_user.id}")
     except Exception as e:
-        await message.reply(f"Ошибка при отправке файла: {str(e)}")
+        await message.reply(f"Ошибка отправки: {str(e)}")
 
 
 # ────────────────────────────────────────────────
@@ -306,13 +231,22 @@ async def get_db_handler(message: types.Message):
 # ────────────────────────────────────────────────
 
 async def main():
-    logging.info("Бот запускается...")
-    await dp.start_polling(bot, allowed_updates=types.AllowedUpdates.MESSAGE + types.AllowedUpdates.CALLBACK_QUERY)
-
+    logger.info("Бот стартует...")
+    try:
+        await dp.start_polling(
+            bot,
+            allowed_updates=["message", "callback_query"]
+        )
+    except Exception as e:
+        logger.error(f"Краш в polling: {e}", exc_info=True)
+        raise
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Остановка по Ctrl+C")
     finally:
-        conn.close()
-        logging.info("Соединение с базой закрыто")
+        if 'conn' in globals():
+            conn.close()
+            logger.info("База закрыта")
