@@ -16,7 +16,6 @@ TOKEN = "8656659502:AAEr1hajHfDs0y-iqjoAWG6qT0Hw7P4IYpI"
 CHANNEL_LINK = "https://t.me/tolkogori"
 CHAT_LINK = "https://t.me/tolkogori_chat"
 PHOTO_PATH = "welcome_photo.jpg" # приветственное фото (или None)
-
 ADMIN_ID = 7051676412 # твой ID — только ты можешь /stats, /broadcast и /getdb
 
 # База данных
@@ -70,11 +69,9 @@ async def start_handler(message: types.Message, state: FSMContext):
         "• Нажимая кнопку ниже, вы соглашаетесь с правилами\n\n"
         "Пройдите простую проверку ↓"
     )
-
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="🚀 ПОДПИСАТЬСЯ", callback_data="start_captcha")
     ]])
-
     if PHOTO_PATH:
         try:
             await message.answer_photo(
@@ -86,7 +83,6 @@ async def start_handler(message: types.Message, state: FSMContext):
             return
         except Exception as e:
             logging.warning(f"Фото не отправлено: {e}")
-
     await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
 @router.callback_query(F.data == "start_captcha")
@@ -210,16 +206,18 @@ async def get_db_handler(message: types.Message):
         return
 
     try:
+        db_file = "subscribers.db"  # если Volume — замени на "/app/data/subscribers.db"
         await message.reply_document(
-            document=FSInputFile("subscribers.db"),
+            document=FSInputFile(db_file),
             caption="Текущая база subscribers.db (все, кто прошёл капчу)"
         )
-        logging.info("База отправлена админу")
+        logging.info("База успешно отправлена админу")
     except FileNotFoundError:
         await message.reply("База ещё пустая (никто не прошёл капчу).")
+        logging.info("Файл базы не найден")
     except Exception as e:
         await message.reply("Ошибка отправки базы.")
-        logging.error(f"Ошибка: {e}")
+        logging.error(f"Ошибка отправки /getdb: {e}")
 
 # Рассылка — команда /broadcast (только для тебя)
 @router.message(F.text.startswith('/broadcast'))
