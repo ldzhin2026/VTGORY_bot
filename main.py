@@ -3,6 +3,7 @@ import random
 import logging
 import sqlite3
 from datetime import datetime
+import os  # добавлено для пути к Volume
 
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import CommandStart
@@ -16,10 +17,14 @@ TOKEN = "8656659502:AAEr1hajHfDs0y-iqjoAWG6qT0Hw7P4IYpI"
 CHANNEL_LINK = "https://t.me/tolkogori"
 CHAT_LINK = "https://t.me/tolkogori_chat"
 PHOTO_PATH = "welcome_photo.jpg" # приветственное фото (или None)
+
 ADMIN_ID = 7051676412 # твой ID — только ты можешь /stats, /broadcast и /getdb
 
+# Путь к базе на постоянном Volume (Railway)
+DB_PATH = "/app/data/subscribers.db"
+
 # База данных
-conn = sqlite3.connect("subscribers.db")
+conn = sqlite3.connect(DB_PATH)
 cur = conn.cursor()
 cur.execute('''CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
@@ -206,15 +211,15 @@ async def get_db_handler(message: types.Message):
         return
 
     try:
-        db_file = "subscribers.db"  # если Volume — замени на "/app/data/subscribers.db"
+        db_file = "/app/data/subscribers.db"  # путь к базе на Volume
         await message.reply_document(
             document=FSInputFile(db_file),
             caption="Текущая база subscribers.db (все, кто прошёл капчу)"
         )
         logging.info("База успешно отправлена админу")
     except FileNotFoundError:
-        await message.reply("База ещё пустая (никто не прошёл капчу).")
-        logging.info("Файл базы не найден")
+        await message.reply("База ещё пустая (никто не прошёл капчу или путь неправильный).")
+        logging.info("Файл базы не найден по пути /app/data/subscribers.db")
     except Exception as e:
         await message.reply("Ошибка отправки базы.")
         logging.error(f"Ошибка отправки /getdb: {e}")
