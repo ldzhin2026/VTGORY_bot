@@ -3,7 +3,7 @@ import random
 import logging
 import sqlite3
 from datetime import datetime
-import os  # для проверки файла
+import os
 
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import CommandStart
@@ -11,13 +11,16 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFil
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiohttp import web
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 # Настройки
 TOKEN = "8656659502:AAEr1hajHfDs0y-iqjoAWG6qT0Hw7P4IYpI"
 CHANNEL_LINK = "https://t.me/tolkogori"
 CHAT_LINK = "https://t.me/tolkogori_chat"
-PHOTO_PATH = "welcome_photo.jpg" # приветственное фото (или None)
-ADMIN_ID = 7051676412 # твой ID — только ты можешь /stats, /broadcast и /getdb
+PHOTO_PATH = "welcome_photo.jpg"  # приветственное фото (или None)
+
+ADMIN_ID = 7051676412  # твой ID — только ты можешь /stats, /broadcast и /getdb
 
 # Путь к базе на постоянном Volume (Railway) — ТВОЙ Mount path
 DB_PATH = "/app/data/subscribers.db"
@@ -41,6 +44,11 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
+
+# Webhook настройки (для Railway)
+WEBHOOK_PATH = "/webhook"  # путь webhook
+WEBHOOK_URL = f"https://{os.environ['RAILWAY_PUBLIC_DOMAIN']}{WEBHOOK_PATH}"
+PORT = int(os.environ.get("PORT", 8080))  # Railway использует PORT = 8080
 
 class CaptchaStates(StatesGroup):
     waiting_for_answer = State()
@@ -74,7 +82,7 @@ async def start_handler(message: types.Message, state: FSMContext):
         "Пройдите простую проверку ↓"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🚀 ПОДПИСАТЬСЯ", callback_data="start_captcha")
+        InlineKeyboardButton(text="🚀 Пройти проверку", callback_data="start_captcha")
     ]])
     if PHOTO_PATH:
         try:
@@ -139,7 +147,7 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             parse_mode="Markdown"
         )
         await state.clear()
-        await callback.answer("Добро пожаловать!")
+        await callback.answer("Добро похаловать!")
     else:
         attempts -= 1
         attempts_used += 1
@@ -191,14 +199,14 @@ async def stats_handler(message: types.Message):
     logging.info(f"/stats успешно отправлен, всего пользователей: {total}")
 
 # Команда /getdb — скачать файл базы (только для тебя)
-@router.message(F.command("getdb"))
+@router.message(F.text.startswith("/getdb"))
 async def get_db_handler(message: types.Message):
     logging.info(f"Получена команда /getdb от {message.from_user.id}")
     if message.from_user.id != ADMIN_ID:
         await message.reply("Доступ запрещён.")
         return
 
-    db_file = "/app/data/subscribers.db"  # ← ТВОЙ Mount path из Volume
+    db_file = "/app/data/subscribers.db" # ← правильный путь на Volume
 
     logging.info(f"Попытка отправки базы по пути: {db_file}")
 
@@ -249,7 +257,7 @@ async def broadcast_handler(message: types.Message):
         return
     success = 0
     failed = 0
-    for (user_id, ) in users:
+    for (user_id,) in users:
         try:
             await bot.send_message(user_id, text, parse_mode="Markdown")
             success += 1
@@ -257,12 +265,16 @@ async def broadcast_handler(message: types.Message):
         except Exception as e:
             failed += 1
             logging.warning(f"Не удалось отправить {user_id}: {e}")
-    await message.reply(f"Рассылка завершена!\n"
-                        f"Отправлено: {success}\n"
-                        f"Не удалось: {failed}\n"
-                        f"Всего в базе: {len(users)}")
+    await message.reply(
+        f"Рассылка завершена!\n"
+        f"Отправлено: {success}\n"
+        f"Не удалось: {failed}\n"
+        f"Всего в базе: {len(users)}"
+    )
+
 async def main():
     await dp.start_polling(bot)
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
