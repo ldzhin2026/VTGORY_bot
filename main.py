@@ -3,7 +3,6 @@ import random
 import logging
 import sqlite3
 from datetime import datetime
-import os
 
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import CommandStart
@@ -11,22 +10,17 @@ from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFil
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiohttp import web
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 # Настройки
 TOKEN = "8656659502:AAEr1hajHfDs0y-iqjoAWG6qT0Hw7P4IYpI"
 CHANNEL_LINK = "https://t.me/tolkogori"
 CHAT_LINK = "https://t.me/tolkogori_chat"
-PHOTO_PATH = "welcome_photo.jpg"  # приветственное фото (или None)
+PHOTO_PATH = "welcome_photo.jpg" # приветственное фото (или None)
 
-ADMIN_ID = 7051676412  # твой ID — только ты можешь /stats, /broadcast и /getdb
-
-# Путь к базе на постоянном Volume (Railway) — ТВОЙ Mount path
-DB_PATH = "/app/data/subscribers.db"
+ADMIN_ID = 7051676412 # твой ID — только ты можешь /stats, /broadcast и /getdb
 
 # База данных
-conn = sqlite3.connect(DB_PATH)
+conn = sqlite3.connect("subscribers.db")
 cur = conn.cursor()
 cur.execute('''CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
@@ -44,11 +38,6 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
-
-# Webhook настройки (для Railway)
-WEBHOOK_PATH = "/webhook"  # путь webhook
-WEBHOOK_URL = f"https://{os.environ['RAILWAY_PUBLIC_DOMAIN']}{WEBHOOK_PATH}"
-PORT = int(os.environ.get("PORT", 8080))  # Railway использует PORT = 8080
 
 class CaptchaStates(StatesGroup):
     waiting_for_answer = State()
@@ -72,8 +61,10 @@ def save_user(user: types.User, attempts_used: int):
     conn.commit()
     logging.info(f"Добавлен: {user.id} (@{username or 'нет'}) — попыток: {attempts_used}")
 
-@router.message(CommandStart())
+@router.message(F.text.startswith("/start"))
 async def start_handler(message: types.Message, state: FSMContext):
+    logging.info(f"Получена команда /start от {message.from_user.id}")
+
     text = (
         "📜 **Правила канала ВЫШЕ ТОЛЬКО ГОРЫ**\n\n"
         "• Обязательная подписка на канал\n"
@@ -81,9 +72,11 @@ async def start_handler(message: types.Message, state: FSMContext):
         "• Нажимая кнопку ниже, вы соглашаетесь с правилами\n\n"
         "Пройдите простую проверку ↓"
     )
+
     kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🚀 Пройти проверку", callback_data="start_captcha")
+        InlineKeyboardButton(text="🚀 ПОДПИСАТЬСЯ", callback_data="start_captcha")
     ]])
+
     if PHOTO_PATH:
         try:
             await message.answer_photo(
@@ -95,10 +88,12 @@ async def start_handler(message: types.Message, state: FSMContext):
             return
         except Exception as e:
             logging.warning(f"Фото не отправлено: {e}")
+
     await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
 @router.callback_query(F.data == "start_captcha")
 async def start_captcha(callback: types.CallbackQuery, state: FSMContext):
+    logging.info("Получена кнопка start_captcha")
     question, correct, variants = generate_task()
     await state.update_data(
         correct=correct,
@@ -122,6 +117,7 @@ async def start_captcha(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("captcha_"))
 async def check_answer(callback: types.CallbackQuery, state: FSMContext):
+    logging.info("Получена кнопка капчи")
     data = await state.get_data()
     correct = data["correct"]
     attempts = data.get("attempts", 3)
@@ -147,7 +143,7 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             parse_mode="Markdown"
         )
         await state.clear()
-        await callback.answer("Добро похаловать!")
+        await callback.answer("Добро пожаловать!")
     else:
         attempts -= 1
         attempts_used += 1
@@ -164,99 +160,80 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
 @router.message(F.text.startswith("/stats"))
 async def stats_handler(message: types.Message):
     logging.info(f"Получена команда /stats от {message.from_user.id}")
+
     if message.from_user.id != ADMIN_ID:
         await message.reply("Доступ запрещён. Только админ может смотреть базу.")
         logging.info("Отказано в доступе к /stats")
         return
+
     logging.info("Админ подтверждён, начинаем сбор статистики")
+
     cur.execute("SELECT COUNT(*) FROM users")
     total = cur.fetchone()[0]
+
     if total == 0:
         await message.reply("База пустая. Никто ещё не прошёл проверку.")
         logging.info("База пустая")
         return
+
     cur.execute("""
-        SELECT user_id, username, first_name, joined_at, attempts_used
-        FROM users
+        SELECT user_id, username, first_name, joined_at, attempts_used 
+        FROM users 
         ORDER BY joined_at DESC
     """)
     users = cur.fetchall()
+
     response = f"📊 Статистика базы:\n"
     response += f"Всего уникальных пользователей: {total}\n\n"
     response += "Список (от новых к старым):\n\n"
+
     chunk = ""
     for i, (uid, un, fn, ja, att) in enumerate(users, 1):
         un = f"@{un}" if un else "нет username"
         date = ja[:19]
         line = f"{i}. {un} ({fn}) — {date} — попыток: {att}\n"
-        if len(response + chunk + line) > 3500: # лимит Telegram
+
+        if len(response + chunk + line) > 3500:  # лимит Telegram
             await message.reply(response + chunk, parse_mode="Markdown")
             response = ""
             chunk = ""
         chunk += line
+
     if chunk:
         await message.reply(response + chunk, parse_mode="Markdown")
+
     logging.info(f"/stats успешно отправлен, всего пользователей: {total}")
-
-# Команда /getdb — скачать файл базы (только для тебя)
-@router.message(F.text.startswith("/getdb"))
-async def get_db_handler(message: types.Message):
-    logging.info(f"Получена команда /getdb от {message.from_user.id}")
-    if message.from_user.id != ADMIN_ID:
-        await message.reply("Доступ запрещён.")
-        return
-
-    db_file = "/app/data/subscribers.db" # ← правильный путь на Volume
-
-    logging.info(f"Попытка отправки базы по пути: {db_file}")
-
-    try:
-        # Проверка существования файла
-        if not os.path.exists(db_file):
-            await message.reply("Файл базы НЕ найден по пути /app/data/subscribers.db. Проверь Volume.")
-            logging.info("Файл НЕ найден")
-            return
-
-        file_size = os.path.getsize(db_file)
-        logging.info(f"Файл найден, размер: {file_size} байт")
-
-        await message.reply_document(
-            document=FSInputFile(db_file),
-            caption=f"Текущая база subscribers.db (размер: {file_size} байт)"
-        )
-        logging.info("База успешно отправлена админу")
-    except FileNotFoundError:
-        await message.reply("База ещё пустая (никто не прошёл капчу) или путь к файлу неправильный. Проверь Volume и /app/data/subscribers.db")
-        logging.info("Файл базы не найден")
-    except PermissionError:
-        await message.reply("Нет прав доступа к файлу базы. Проверь права Volume.")
-        logging.error("PermissionError при доступе к файлу")
-    except Exception as e:
-        await message.reply("Ошибка отправки базы. Проверь логи.")
-        logging.error(f"Ошибка /getdb: {e}")
 
 # Рассылка — команда /broadcast (только для тебя)
 @router.message(F.text.startswith('/broadcast'))
 async def broadcast_handler(message: types.Message):
     logging.info(f"Получена команда /broadcast от {message.from_user.id}")
+
     if message.from_user.id != ADMIN_ID:
         await message.reply("Доступ запрещён. Только админ может рассылать.")
         return
+
     if len(message.text.split()) < 2:
         await message.reply("Используй: /broadcast текст для рассылки")
         return
+
     text = message.text.split(maxsplit=1)[1].strip()
     if not text:
         await message.reply("Напиши текст после /broadcast")
         return
+
     await message.reply("Рассылка начата...")
+
     cur.execute("SELECT user_id FROM users")
     users = cur.fetchall()
+
     if not users:
         await message.reply("В базе никого нет. Пройди капчу сам для теста.")
         return
+
     success = 0
     failed = 0
+
     for (user_id,) in users:
         try:
             await bot.send_message(user_id, text, parse_mode="Markdown")
@@ -265,6 +242,7 @@ async def broadcast_handler(message: types.Message):
         except Exception as e:
             failed += 1
             logging.warning(f"Не удалось отправить {user_id}: {e}")
+
     await message.reply(
         f"Рассылка завершена!\n"
         f"Отправлено: {success}\n"
