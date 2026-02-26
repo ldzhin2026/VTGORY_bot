@@ -3,7 +3,7 @@ import random
 import logging
 import sqlite3
 from datetime import datetime
-import os  # добавлено для проверки файла (обязательно!)
+import os  # для проверки файла
 
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import CommandStart
@@ -198,7 +198,7 @@ async def get_db_handler(message: types.Message):
         await message.reply("Доступ запрещён.")
         return
 
-    db_file = "/app/data/subscribers.db"  # ← правильный путь на Volume
+    db_file = "/app/data/subscribers.db"  # ← ТВОЙ Mount path из Volume
 
     logging.info(f"Попытка отправки базы по пути: {db_file}")
 
