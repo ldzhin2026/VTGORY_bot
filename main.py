@@ -149,7 +149,7 @@ async def admin_menu(message: types.Message):
     ])
     await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
 
-# Универсальный обработчик callback
+# Универсальный callback-хендлер
 @router.callback_query()
 async def universal_callback_handler(callback: types.CallbackQuery, state: FSMContext):
     logger.info(f"[CALLBACK] Получен от {callback.from_user.id}: {callback.data}")
@@ -235,7 +235,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
 
     await callback.answer()
 
-# Предпросмотр (только текст)
+# Предпросмотр (текстовый)
 @router.message(BroadcastStates.waiting_for_message)
 async def process_broadcast_content(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -259,7 +259,7 @@ async def process_broadcast_content(message: types.Message, state: FSMContext):
     
     await state.set_state(BroadcastStates.confirm_broadcast)
 
-# Выбор аудитории и рассылка
+# Выбор аудитории
 @router.callback_query(F.data == "confirm_broadcast_yes", BroadcastStates.confirm_broadcast)
 async def ask_audience(callback: types.CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -300,7 +300,7 @@ async def process_selective_list(message: types.Message, state: FSMContext):
     await do_broadcast(message, state, "selective", unique)
     await state.clear()
 
-# Правильная рассылка через bot.send_copy
+# Правильная рассылка
 async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
     data = await state.get_data()
     content_json = data.get("broadcast_content")
