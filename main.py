@@ -76,7 +76,7 @@ def save_user(user: types.User, attempts_used: int):
                 (user.id, username, user.first_name, now, attempts_used))
     conn.commit()
 
-# Хендлеры капчи
+# Хендлеры капчи (без изменений)
 @router.message(CommandStart())
 async def start_handler(message: types.Message, state: FSMContext):
     text = "📜 **Правила канала ВЫШЕ ТОЛЬКО ГОРЫ**\n\n• Обязательная подписка\n• Запрещены: спам, оскорбления\n\nПройдите проверку ↓"
@@ -149,7 +149,7 @@ async def admin_menu(message: types.Message):
     ])
     await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
 
-# Универсальный callback-хендлер
+# Универсальный обработчик callback
 @router.callback_query()
 async def universal_callback_handler(callback: types.CallbackQuery, state: FSMContext):
     logger.info(f"[CALLBACK] Получен от {callback.from_user.id}: {callback.data}")
@@ -300,7 +300,7 @@ async def process_selective_list(message: types.Message, state: FSMContext):
     await do_broadcast(message, state, "selective", unique)
     await state.clear()
 
-# Правильная рассылка (через bot.send_copy)
+# Правильная рассылка — используем copy_message вместо send_copy
 async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
     data = await state.get_data()
     content_json = data.get("broadcast_content")
@@ -337,7 +337,7 @@ async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
 
     for uid in recipients:
         try:
-            await bot.send_copy(
+            await bot.copy_message(
                 chat_id=uid,
                 from_chat_id=msg.chat.id,
                 message_id=msg.message_id
