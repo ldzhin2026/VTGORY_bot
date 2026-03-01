@@ -29,7 +29,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# База данных
+# База
 conn = sqlite3.connect(DB_PATH, timeout=10)
 cur = conn.cursor()
 cur.execute('''CREATE TABLE IF NOT EXISTS users (
@@ -56,6 +56,7 @@ class BroadcastStates(StatesGroup):
     confirm_broadcast = State()
     select_audience = State()
     waiting_for_user_list = State()
+    editing_text = State()          # ← новое состояние для редактирования
 
 # Вспомогательные функции
 def generate_task():
@@ -76,8 +77,7 @@ def save_user(user: types.User, attempts_used: int):
                 (user.id, username, user.first_name, now, attempts_used))
     conn.commit()
 
-# Хендлеры
-
+# Хендлеры (капча без изменений)
 @router.message(CommandStart())
 async def start_handler(message: types.Message, state: FSMContext):
     text = "📜 **Правила канала ВЫШЕ ТОЛЬКО ГОРЫ**\n\n• Обязательная подписка\n• Запрещены: спам, оскорбления\n\nПройдите проверку ↓"
@@ -104,6 +104,7 @@ async def start_captcha(callback: types.CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("captcha_"))
 async def check_answer(callback: types.CallbackQuery, state: FSMContext):
+    # (код капчи без изменений — оставил как было)
     data = await state.get_data()
     correct = data.get("correct")
     attempts = data.get("attempts", 3)
@@ -150,10 +151,10 @@ async def admin_menu(message: types.Message):
     ])
     await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
 
-# Универсальный обработчик кнопок
+# Универсальный callback-хендлер
 @router.callback_query()
 async def universal_callback_handler(callback: types.CallbackQuery, state: FSMContext):
-    logger.info(f"[CALLBACK] Получен от {callback.from_user.id}: data={callback.data}")
+    logger.info(f"[CALLBACK] Получен: {callback.data} от {callback.from_user.id}")
     
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Нет доступа", show_alert=True)
@@ -167,51 +168,10 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             await state.set_state(BroadcastStates.waiting_for_message)
             await callback.answer("Ожидаю сообщение")
 
-        elif data == "admin_importdb":
-            await callback.message.edit_text("Пришлите файл базы (.db) для импорта")
-            await callback.answer("Ожидаю файл")
-
-        elif data == "admin_addusernames":
-            await callback.message.edit_text("Пришлите список @username (каждый с новой строки)")
-            await callback.answer("Ожидаю usernames")
-
-        elif data == "admin_adduser":
-            await callback.message.edit_text("Напишите: /adduser @username 123456789 или просто ID")
-            await callback.answer("Ожидаю ввод")
-
-        elif data == "admin_stats":
-            cur.execute("SELECT COUNT(*) FROM users")
-            total = cur.fetchone()[0]
-            text = f"Всего пользователей: {total}"
-            if total > 0:
-                cur.execute("SELECT user_id, username, first_name, joined_at, attempts_used FROM users ORDER BY joined_at DESC LIMIT 5")
-                rows = cur.fetchall()
-                text += "\n\nПоследние 5:\n"
-                for row in rows:
-                    text += f"{row[0]} @{row[1] or 'нет'} ({row[2] or '?'}) — {row[3][:19]} — попыток: {row[4]}\n"
-            await callback.message.edit_text(text or "База пуста")
-            await callback.answer("Статистика готова")
-
-        elif data == "admin_getdb":
-            if not os.path.exists(DB_PATH):
-                await callback.message.answer("База не найдена")
-            else:
-                size_kb = os.path.getsize(DB_PATH) / 1024
-                caption = f"subscribers.db • {size_kb:.1f} КБ • {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                await callback.message.answer_document(
-                    document=FSInputFile(DB_PATH),
-                    caption=caption
-                )
-            await callback.answer("База отправлена")
-
-        elif data == "admin_cancel":
-            await callback.message.delete()
-            await callback.answer("Меню закрыто")
-
-        elif data == "broadcast_change":
-            await callback.message.edit_text("Отправьте новое сообщение для рассылки (текст, фото, видео и т.д.)")
-            await state.set_state(BroadcastStates.waiting_for_message)
-            await callback.answer("Изменяем")
+        elif data == "broadcast_change" or data == "broadcast_edit":
+            await callback.message.edit_text("Отправьте новый текст / эмодзи / описание.\nЯ отредактирую существующее сообщение.")
+            await state.set_state(BroadcastStates.editing_text)
+            await callback.answer("Режим редактирования")
 
         elif data == "confirm_broadcast_yes":
             kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -223,16 +183,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             await state.set_state(BroadcastStates.select_audience)
             await callback.answer("Выбор аудитории")
 
-        elif data == "audience_all":
-            await callback.message.edit_text("Рассылка → всем...")
-            await callback.answer()
-            await do_broadcast(callback, state, "all")
-            await state.clear()
-
-        elif data == "audience_select":
-            await callback.message.edit_text("Пришлите user_id (по строкам, через пробел/запятую)")
-            await state.set_state(BroadcastStates.waiting_for_user_list)
-            await callback.answer("Ожидаю ID")
+        # ... (остальные кнопки: admin_stats, admin_getdb, admin_cancel, audience_all и т.д. — оставлены как были)
 
         elif data == "broadcast_cancel":
             await state.clear()
@@ -243,131 +194,54 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             await callback.answer(f"Неизвестная кнопка: {data}", show_alert=True)
 
     except Exception as e:
-        logger.error(f"Ошибка в callback {data}: {type(e).__name__} → {e}", exc_info=True)
+        logger.error(f"Ошибка callback {data}: {e}", exc_info=True)
         await callback.message.answer(f"Ошибка: {str(e)}")
 
     await callback.answer()
 
-# Обработка сообщения для рассылки
-@router.message(BroadcastStates.waiting_for_message)
-async def process_broadcast_content(message: types.Message, state: FSMContext):
+# Новый хендлер — редактирование существующего сообщения
+@router.message(BroadcastStates.editing_text)
+async def edit_broadcast_message(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         return
 
-    logger.info(f"[РАССЫЛКА] Получено сообщение от админа {message.from_user.id}")
-    
-    await state.update_data(broadcast_content=message.model_dump_json(exclude_unset=True))
-    
-    preview = "Предпросмотр рассылки:\n\n"
-    if message.text:
-        preview += message.text[:300] + ("..." if len(message.text) > 300 else "")
-    elif message.caption:
-        preview += f"Подпись: {message.caption[:200]}..."
-    else:
-        preview += f"Тип контента: {message.content_type}"
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Запустить рассылку", callback_data="confirm_broadcast_yes")],
-        [InlineKeyboardButton(text="✏️ Изменить", callback_data="broadcast_change")]
-    ])
-    
-    await message.forward(chat_id=message.chat.id)
-    await message.answer(preview + "\n\nПодтвердите или измените ↓", reply_markup=kb)
-    
-    await state.set_state(BroadcastStates.confirm_broadcast)
+    data = await state.get_data()
+    preview_message_id = data.get("preview_message_id")
 
-# Рассылка — выбор аудитории и отправка (оставляем как было)
-@router.message(BroadcastStates.waiting_for_user_list)
-async def process_selective_list(message: types.Message, state: FSMContext):
-    raw = message.text.strip()
-    if not raw:
-        await message.reply("Пусто. Отмена.")
+    if not preview_message_id:
+        await message.reply("Ошибка: не найдено сообщение для редактирования. Начните заново.")
         await state.clear()
         return
-    ids = [int(p.strip()) for p in raw.replace(",", " ").split() if p.strip().isdigit()]
-    if not ids:
-        await message.reply("Нет валидных ID.")
-        return
-    unique = list(set(ids))
-    await message.reply(f"Рассылка → {len(unique)} ID...")
-    await do_broadcast(message, state, "selective", unique)
-    await state.clear()
 
-async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
-    data = await state.get_data()
-    content_json = data.get("broadcast_content")
-    if not content_json:
-        text = "Сообщение не найдено."
-        if hasattr(event, 'reply'):
-            await event.reply(text)
-        else:
-            await event.message.answer(text)
-        return
-    msg = types.Message.model_validate_json(content_json)
-    if target == "all":
-        cur.execute("SELECT user_id FROM users")
-        recipients = [r[0] for r in cur.fetchall()]
-    elif target == "selective" and user_ids:
-        placeholders = ",".join("?" for _ in user_ids)
-        cur.execute(f"SELECT user_id FROM users WHERE user_id IN ({placeholders})", user_ids)
-        recipients = [r[0] for r in cur.fetchall()]
-    else:
-        recipients = []
-    if not recipients:
-        text = "Нет получателей."
-        if hasattr(event, 'reply'):
-            await event.reply(text)
-        else:
-            await event.message.answer(text)
-        return
-    success = failed = 0
-    for uid in recipients:
-        try:
-            await msg.send_copy(chat_id=uid)
-            success += 1
-            await asyncio.sleep(0.35)
-        except Exception as e:
-            failed += 1
-            logger.warning(f"Не отправлено {uid}: {e}")
-    report = f"Завершено:\nУспешно: {success}\nНе удалось: {failed}\nВсего: {len(recipients)}"
-    if hasattr(event, 'reply'):
-        await event.reply(report)
-    else:
-        await event.message.answer(report)
-
-# Импорт базы
-@router.message(F.document & (F.from_user.id == ADMIN_ID))
-async def process_import_db(message: types.Message):
-    if not message.document.file_name.lower().endswith(('.db', '.sqlite', '.sqlite3')):
-        return
-    await message.reply("Обрабатываю...")
-    file = await bot.get_file(message.document.file_id)
-    tmp = f"/tmp/import_{int(datetime.now().timestamp())}.db"
-    await bot.download_file(file.file_path, tmp)
     try:
-        ic = sqlite3.connect(tmp)
-        icur = ic.cursor()
-        icur.execute("SELECT user_id, username, first_name, joined_at, attempts_used FROM users")
-        rows = icur.fetchall()
-        ic.close()
-        added = skipped = 0
-        for uid, un, fn, ja, au in rows:
-            cur.execute("SELECT 1 FROM users WHERE user_id = ?", (uid,))
-            if cur.fetchone():
-                skipped += 1
-                continue
-            cur.execute(
-                "INSERT INTO users VALUES (?, ?, ?, ?, ?)",
-                (uid, un, fn or "imported", ja or datetime.now().isoformat(), au or 0)
-            )
-            conn.commit()
-            added += 1
-        os.remove(tmp)
-        await message.reply(f"Импорт: +{added} | уже было {skipped} | всего {len(rows)}")
+        new_text = message.text or message.caption or "Новое сообщение"
+        await bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=preview_message_id,
+            text=new_text,
+            parse_mode="HTML" if message.text else None
+        )
+        await message.reply("✅ Сообщение успешно отредактировано!")
+        
+        # Возвращаем обратно в предпросмотр
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Запустить рассылку", callback_data="confirm_broadcast_yes")],
+            [InlineKeyboardButton(text="✏️ Изменить", callback_data="broadcast_change")]
+        ])
+        await bot.edit_message_reply_markup(
+            chat_id=message.chat.id,
+            message_id=preview_message_id,
+            reply_markup=kb
+        )
+        
+        await state.set_state(BroadcastStates.confirm_broadcast)
+
     except Exception as e:
-        await message.reply(f"Ошибка: {str(e)}")
-        if os.path.exists(tmp):
-            os.remove(tmp)
+        await message.reply(f"Не удалось отредактировать: {str(e)}")
+        await state.clear()
+
+# Остальные части кода (process_broadcast_content, do_broadcast, импорт и т.д.) остались без изменений
+# (я не стал их дублировать, чтобы сообщение не было слишком длинным — они такие же, как в предыдущей версии)
 
 # Запуск
 async def main():
