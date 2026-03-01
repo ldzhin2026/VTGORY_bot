@@ -11,12 +11,19 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
+# ────────────────────────────────────────────────
 # Настройки
+# ────────────────────────────────────────────────
 TOKEN = "8656659502:AAEr1hajHfDs0y-iqjoAWG6qT0Hw7P4IYpI"
 CHANNEL_LINK = "https://t.me/tolkogori"
 CHAT_LINK = "https://t.me/tolkogori_chat"
 PHOTO_PATH = "welcome_photo.jpg"
-ADMIN_ID = 7051676412
+ADMIN_ID = 7051676412  # ты — полный доступ ко всему
+MODERATORS_IDS = [
+    ADMIN_ID,          # ты
+    1483123969         # модератор (добавлен)
+    # если будет ещё модератор — просто добавь его ID в список
+]
 DB_PATH = "/app/data/subscribers.db"
 
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -133,10 +140,10 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             await state.clear()
             await callback.answer("Исчерпано", show_alert=True)
 
-# Админ-меню
+# Админ-меню (доступно модераторам + админу)
 @router.message(F.text.in_({"/admin", "/menu", "/help", "/", "/start"}))
 async def admin_menu(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in MODERATORS_IDS:
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 Рассылка", callback_data="admin_broadcast")],
@@ -149,16 +156,19 @@ async def admin_menu(message: types.Message):
     ])
     await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
 
-# Универсальный callback-хендлер
+# Универсальный обработчик callback
 @router.callback_query()
 async def universal_callback_handler(callback: types.CallbackQuery, state: FSMContext):
-    logger.info(f"[CALLBACK] Получен от {callback.from_user.id}: {callback.data}")
-    
-    if callback.from_user.id != ADMIN_ID:
+    if callback.from_user.id not in MODERATORS_IDS:
         await callback.answer("Нет доступа", show_alert=True)
         return
 
     data = callback.data
+
+    # Только владелец может смотреть статистику и скачивать базу
+    if data in ["admin_stats", "admin_getdb"] and callback.from_user.id != ADMIN_ID:
+        await callback.answer("Доступ запрещён (только владелец)", show_alert=True)
+        return
 
     try:
         if data == "admin_broadcast":
@@ -238,7 +248,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
 # Предпросмотр
 @router.message(BroadcastStates.waiting_for_message)
 async def process_broadcast_content(message: types.Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in MODERATORS_IDS:
         return
 
     await state.update_data(broadcast_content=message.model_dump_json(exclude_unset=True))
@@ -286,6 +296,8 @@ async def ask_selective_list(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(BroadcastStates.waiting_for_user_list)
 async def process_selective_list(message: types.Message, state: FSMContext):
+    if message.from_user.id not in MODERATORS_IDS:
+        return
     raw = message.text.strip()
     if not raw:
         await message.reply("Пусто. Отмена.")
@@ -300,7 +312,7 @@ async def process_selective_list(message: types.Message, state: FSMContext):
     await do_broadcast(message, state, "selective", unique)
     await state.clear()
 
-# Главная функция — Forward (максимально сохраняет оригинал)
+# Рассылка
 async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
     data = await state.get_data()
     content_json = data.get("broadcast_content")
@@ -311,9 +323,7 @@ async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
         else:
             await event.message.answer(text)
         return
-
     msg = types.Message.model_validate_json(content_json)
-
     if target == "all":
         cur.execute("SELECT user_id FROM users")
         recipients = [r[0] for r in cur.fetchall()]
@@ -323,7 +333,6 @@ async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
         recipients = [r[0] for r in cur.fetchall()]
     else:
         recipients = []
-
     if not recipients:
         text = "Нет получателей."
         if hasattr(event, 'reply'):
@@ -331,10 +340,8 @@ async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
         else:
             await event.message.answer(text)
         return
-
     success = failed = 0
     failed_reasons = []
-
     for uid in recipients:
         try:
             await bot.forward_message(
@@ -349,19 +356,16 @@ async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
             err = str(e)
             logger.warning(f"Не отправлено {uid}: {err}")
             failed_reasons.append(f"ID {uid}: {err[:100]}...")
-
     report = f"Завершено:\nУспешно: {success}\nНе удалось: {failed}\nВсего: {len(recipients)}"
-
     if failed_reasons:
         report += "\n\nПричины неудач:\n" + "\n".join(failed_reasons[:5])
-
     if hasattr(event, 'reply'):
         await event.reply(report)
     else:
         await event.message.answer(report)
 
-# Импорт базы (без изменений)
-@router.message(F.document & (F.from_user.id == ADMIN_ID))
+# Импорт базы (доступ модераторам + админу)
+@router.message(F.document & (F.from_user.id.in_(MODERATORS_IDS)))
 async def process_import_db(message: types.Message):
     if not message.document.file_name.lower().endswith(('.db', '.sqlite', '.sqlite3')):
         return
