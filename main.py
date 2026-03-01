@@ -11,9 +11,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# ────────────────────────────────────────────────
 # Настройки
-# ────────────────────────────────────────────────
 TOKEN = "8656659502:AAEr1hajHfDs0y-iqjoAWG6qT0Hw7P4IYpI"
 CHANNEL_LINK = "https://t.me/tolkogori"
 CHAT_LINK = "https://t.me/tolkogori_chat"
@@ -78,7 +76,7 @@ def save_user(user: types.User, attempts_used: int):
                 (user.id, username, user.first_name, now, attempts_used))
     conn.commit()
 
-# Хендлеры капчи
+# Хендлеры капчи (без изменений)
 @router.message(CommandStart())
 async def start_handler(message: types.Message, state: FSMContext):
     text = "📜 **Правила канала ВЫШЕ ТОЛЬКО ГОРЫ**\n\n• Обязательная подписка\n• Запрещены: спам, оскорбления\n\nПройдите проверку ↓"
@@ -151,7 +149,7 @@ async def admin_menu(message: types.Message):
     ])
     await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
 
-# Универсальный обработчик callback
+# Универсальный callback-хендлер
 @router.callback_query()
 async def universal_callback_handler(callback: types.CallbackQuery, state: FSMContext):
     logger.info(f"[CALLBACK] Получен от {callback.from_user.id}: {callback.data}")
@@ -237,7 +235,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
 
     await callback.answer()
 
-# Предпросмотр (текстовый + оригинал)
+# Предпросмотр
 @router.message(BroadcastStates.waiting_for_message)
 async def process_broadcast_content(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -246,7 +244,7 @@ async def process_broadcast_content(message: types.Message, state: FSMContext):
     await state.update_data(broadcast_content=message.model_dump_json(exclude_unset=True))
     
     preview_text = message.text or message.caption or "Сообщение без текста"
-    preview = f"Предпросмотр рассылки (текстовая версия):\n\n{preview_text[:500]}..."
+    preview = f"Предпросмотр рассылки:\n\n{preview_text[:500]}..."
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Запустить рассылку", callback_data="confirm_broadcast_yes")],
@@ -255,7 +253,7 @@ async def process_broadcast_content(message: types.Message, state: FSMContext):
     
     await message.forward(chat_id=message.chat.id)
     await message.answer(
-        preview + "\n\n(при рассылке кнопки будут прикреплены к посту)\nПодтвердите или измените ↓",
+        preview + "\n\n(при рассылке будет переслан оригинал с кнопками и эмодзи)",
         reply_markup=kb
     )
     
@@ -302,7 +300,7 @@ async def process_selective_list(message: types.Message, state: FSMContext):
     await do_broadcast(message, state, "selective", unique)
     await state.clear()
 
-# Главная функция рассылки — переотправка с кнопками
+# Главная функция — Forward (максимально сохраняет оригинал)
 async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
     data = await state.get_data()
     content_json = data.get("broadcast_content")
@@ -316,7 +314,6 @@ async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
 
     msg = types.Message.model_validate_json(content_json)
 
-    # Получаем получателей
     if target == "all":
         cur.execute("SELECT user_id FROM users")
         recipients = [r[0] for r in cur.fetchall()]
@@ -338,69 +335,15 @@ async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
     success = failed = 0
     failed_reasons = []
 
-    # Твои кнопки (прикрепляются к посту)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🎁 ТЕЛЕГРАМ КАНАЛ", url=CHANNEL_LINK)],
-        [InlineKeyboardButton(text="💬 НАШ ЧАТ", url=CHAT_LINK)],
-        [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")]
-    ])
-
     for uid in recipients:
         try:
-            if msg.photo:
-                # Фото + подпись + кнопки
-                photo = msg.photo[-1].file_id
-                caption = msg.caption or ""
-                await bot.send_photo(
-                    chat_id=uid,
-                    photo=photo,
-                    caption=caption,
-                    reply_markup=kb,
-                    parse_mode="HTML"
-                )
-            elif msg.video:
-                video = msg.video.file_id
-                caption = msg.caption or ""
-                await bot.send_video(
-                    chat_id=uid,
-                    video=video,
-                    caption=caption,
-                    reply_markup=kb,
-                    parse_mode="HTML"
-                )
-            elif msg.animation:
-                animation = msg.animation.file_id
-                caption = msg.caption or ""
-                await bot.send_animation(
-                    chat_id=uid,
-                    animation=animation,
-                    caption=caption,
-                    reply_markup=kb,
-                    parse_mode="HTML"
-                )
-            elif msg.document:
-                document = msg.document.file_id
-                caption = msg.caption or ""
-                await bot.send_document(
-                    chat_id=uid,
-                    document=document,
-                    caption=caption,
-                    reply_markup=kb,
-                    parse_mode="HTML"
-                )
-            else:
-                # Текст
-                text = msg.text or msg.caption or "Пост без текста"
-                await bot.send_message(
-                    chat_id=uid,
-                    text=text,
-                    reply_markup=kb,
-                    parse_mode="HTML"
-                )
-
+            await bot.forward_message(
+                chat_id=uid,
+                from_chat_id=msg.chat.id,
+                message_id=msg.message_id
+            )
             success += 1
             await asyncio.sleep(0.35)
-
         except Exception as e:
             failed += 1
             err = str(e)
@@ -417,7 +360,7 @@ async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
     else:
         await event.message.answer(report)
 
-# Импорт базы
+# Импорт базы (без изменений)
 @router.message(F.document & (F.from_user.id == ADMIN_ID))
 async def process_import_db(message: types.Message):
     if not message.document.file_name.lower().endswith(('.db', '.sqlite', '.sqlite3')):
