@@ -150,7 +150,7 @@ async def admin_menu(message: types.Message):
     ])
     await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
 
-# Универсальный обработчик всех кнопок меню
+# Универсальный обработчик кнопок
 @router.callback_query()
 async def universal_callback_handler(callback: types.CallbackQuery, state: FSMContext):
     logger.info(f"[CALLBACK] Получен от {callback.from_user.id}: data={callback.data}")
@@ -208,6 +208,37 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             await callback.message.delete()
             await callback.answer("Меню закрыто")
 
+        elif data == "broadcast_change":
+            await callback.message.edit_text("Отправьте новое сообщение для рассылки (текст, фото, видео и т.д.)")
+            await state.set_state(BroadcastStates.waiting_for_message)
+            await callback.answer("Изменяем")
+
+        elif data == "confirm_broadcast_yes":
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Всем", callback_data="audience_all")],
+                [InlineKeyboardButton(text="Выборочно по ID", callback_data="audience_select")],
+                [InlineKeyboardButton(text="Отмена", callback_data="broadcast_cancel")]
+            ])
+            await callback.message.edit_text("Кому отправить?", reply_markup=kb)
+            await state.set_state(BroadcastStates.select_audience)
+            await callback.answer("Выбор аудитории")
+
+        elif data == "audience_all":
+            await callback.message.edit_text("Рассылка → всем...")
+            await callback.answer()
+            await do_broadcast(callback, state, "all")
+            await state.clear()
+
+        elif data == "audience_select":
+            await callback.message.edit_text("Пришлите user_id (по строкам, через пробел/запятую)")
+            await state.set_state(BroadcastStates.waiting_for_user_list)
+            await callback.answer("Ожидаю ID")
+
+        elif data == "broadcast_cancel":
+            await state.clear()
+            await callback.message.edit_text("Рассылка отменена")
+            await callback.answer("Отменено")
+
         else:
             await callback.answer(f"Неизвестная кнопка: {data}", show_alert=True)
 
@@ -217,7 +248,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
 
     await callback.answer()
 
-# Обработка сообщения для рассылки (когда админ отправляет текст/фото после нажатия кнопки)
+# Обработка сообщения для рассылки
 @router.message(BroadcastStates.waiting_for_message)
 async def process_broadcast_content(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -237,39 +268,15 @@ async def process_broadcast_content(message: types.Message, state: FSMContext):
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Запустить рассылку", callback_data="confirm_broadcast_yes")],
-        [InlineKeyboardButton(text="✏️ Отправить другое", callback_data="broadcast_cancel")]
+        [InlineKeyboardButton(text="✏️ Изменить", callback_data="broadcast_change")]
     ])
     
     await message.forward(chat_id=message.chat.id)
-    await message.answer(preview + "\n\nПодтвердите или отмените ↓", reply_markup=kb)
+    await message.answer(preview + "\n\nПодтвердите или измените ↓", reply_markup=kb)
     
     await state.set_state(BroadcastStates.confirm_broadcast)
 
-# Дальше — продолжение рассылки (предпросмотр → выбор аудитории → отправка)
-@router.callback_query(F.data == "confirm_broadcast_yes", BroadcastStates.confirm_broadcast)
-async def ask_audience(callback: types.CallbackQuery, state: FSMContext):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Всем", callback_data="audience_all")],
-        [InlineKeyboardButton(text="Выборочно по ID", callback_data="audience_select")],
-        [InlineKeyboardButton(text="Отмена", callback_data="broadcast_cancel")]
-    ])
-    await callback.message.edit_text("Кому отправить?", reply_markup=kb)
-    await state.set_state(BroadcastStates.select_audience)
-    await callback.answer()
-
-@router.callback_query(F.data == "audience_all", BroadcastStates.select_audience)
-async def broadcast_to_all(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("Рассылка → всем...")
-    await callback.answer()
-    await do_broadcast(callback, state, "all")
-    await state.clear()
-
-@router.callback_query(F.data == "audience_select", BroadcastStates.select_audience)
-async def ask_selective_list(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("Пришлите user_id (по строкам, через пробел/запятую)")
-    await state.set_state(BroadcastStates.waiting_for_user_list)
-    await callback.answer()
-
+# Рассылка — выбор аудитории и отправка (оставляем как было)
 @router.message(BroadcastStates.waiting_for_user_list)
 async def process_selective_list(message: types.Message, state: FSMContext):
     raw = message.text.strip()
@@ -290,7 +297,7 @@ async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
     data = await state.get_data()
     content_json = data.get("broadcast_content")
     if not content_json:
-        text = "Сообщение не найдено. Начните заново."
+        text = "Сообщение не найдено."
         if hasattr(event, 'reply'):
             await event.reply(text)
         else:
@@ -328,12 +335,6 @@ async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
     else:
         await event.message.answer(report)
 
-@router.callback_query(F.data == "broadcast_cancel")
-async def cancel_broadcast(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await callback.message.edit_text("Отменено")
-    await callback.answer()
-
 # Импорт базы
 @router.message(F.document & (F.from_user.id == ADMIN_ID))
 async def process_import_db(message: types.Message):
@@ -367,23 +368,6 @@ async def process_import_db(message: types.Message):
         await message.reply(f"Ошибка: {str(e)}")
         if os.path.exists(tmp):
             os.remove(tmp)
-
-# Добавление по username
-@router.message(F.text.startswith("/addusernames"))
-async def add_usernames(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    lines = [l.strip().lstrip("@") for l in message.text.splitlines()[1:] if l.strip()]
-    if not lines:
-        await message.reply("Список пуст.")
-        return
-    added = 0
-    for un in lines:
-        if un:
-            fake = types.User(id=0, is_bot=False, first_name="imported", username=un)
-            save_user(fake, 0)
-            added += 1
-    await message.reply(f"Добавлено {added} username (user_id=0)")
 
 # Запуск
 async def main():
