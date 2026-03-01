@@ -300,7 +300,7 @@ async def process_selective_list(message: types.Message, state: FSMContext):
     await do_broadcast(message, state, "selective", unique)
     await state.clear()
 
-# Правильная рассылка
+# Правильная рассылка (через bot.send_copy)
 async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
     data = await state.get_data()
     content_json = data.get("broadcast_content")
