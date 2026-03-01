@@ -76,7 +76,7 @@ def save_user(user: types.User, attempts_used: int):
                 (user.id, username, user.first_name, now, attempts_used))
     conn.commit()
 
-# Хендлеры капчи
+# Хендлеры капчи (без изменений)
 @router.message(CommandStart())
 async def start_handler(message: types.Message, state: FSMContext):
     text = "📜 **Правила канала ВЫШЕ ТОЛЬКО ГОРЫ**\n\n• Обязательная подписка\n• Запрещены: спам, оскорбления\n\nПройдите проверку ↓"
@@ -167,7 +167,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             await callback.answer("Ожидаю")
 
         elif data == "broadcast_change":
-            await callback.message.edit_text("Отправьте новое сообщение для рассылки (или текст для изменения)")
+            await callback.message.edit_text("Отправьте новое сообщение для рассылки")
             await state.set_state(BroadcastStates.waiting_for_message)
             await callback.answer("Изменяем")
 
@@ -179,7 +179,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             ])
             await callback.message.edit_text("Кому отправить?", reply_markup=kb)
             await state.set_state(BroadcastStates.select_audience)
-            await callback.answer("Выбор")
+            await callback.answer("Выбор аудитории")
 
         elif data == "audience_all":
             await callback.message.edit_text("Рассылка запущена → всем...")
@@ -235,7 +235,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
 
     await callback.answer()
 
-# Обработка сообщения для рассылки (с текстовым предпросмотром)
+# Обработка сообщения для рассылки (текстовый предпросмотр)
 @router.message(BroadcastStates.waiting_for_message)
 async def process_broadcast_content(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -243,7 +243,6 @@ async def process_broadcast_content(message: types.Message, state: FSMContext):
 
     await state.update_data(broadcast_content=message.model_dump_json(exclude_unset=True))
     
-    # Предпросмотр только текстом
     preview_text = message.text or message.caption or "Сообщение без текста"
     preview = f"Предпросмотр рассылки (текстовая версия):\n\n{preview_text[:500]}..."
 
@@ -252,7 +251,6 @@ async def process_broadcast_content(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="✏️ Изменить", callback_data="broadcast_change")]
     ])
     
-    # Пересылаем оригинал полностью (с картинкой, кнопками, эмодзи)
     await message.forward(chat_id=message.chat.id)
     await message.answer(
         preview + "\n\n(картинка, кнопки и анимированные эмодзи сохранятся при рассылке)\nПодтвердите или измените ↓",
@@ -261,7 +259,7 @@ async def process_broadcast_content(message: types.Message, state: FSMContext):
     
     await state.set_state(BroadcastStates.confirm_broadcast)
 
-# Выбор аудитории и рассылка
+# Выбор аудитории и отправка
 @router.callback_query(F.data == "confirm_broadcast_yes", BroadcastStates.confirm_broadcast)
 async def ask_audience(callback: types.CallbackQuery, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -302,6 +300,7 @@ async def process_selective_list(message: types.Message, state: FSMContext):
     await do_broadcast(message, state, "selective", unique)
     await state.clear()
 
+# Исправленная рассылка (используем bot.send_copy)
 async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
     data = await state.get_data()
     content_json = data.get("broadcast_content")
@@ -312,7 +311,9 @@ async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
         else:
             await event.message.answer(text)
         return
+
     msg = types.Message.model_validate_json(content_json)
+
     if target == "all":
         cur.execute("SELECT user_id FROM users")
         recipients = [r[0] for r in cur.fetchall()]
@@ -322,6 +323,7 @@ async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
         recipients = [r[0] for r in cur.fetchall()]
     else:
         recipients = []
+
     if not recipients:
         text = "Нет получателей."
         if hasattr(event, 'reply'):
@@ -329,16 +331,30 @@ async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
         else:
             await event.message.answer(text)
         return
+
     success = failed = 0
+    failed_reasons = []
+
     for uid in recipients:
         try:
-            await msg.send_copy(chat_id=uid)
+            await bot.send_copy(
+                chat_id=uid,
+                from_chat_id=msg.chat.id,
+                message_id=msg.message_id
+            )
             success += 1
             await asyncio.sleep(0.35)
         except Exception as e:
             failed += 1
-            logger.warning(f"Не отправлено {uid}: {e}")
+            err = str(e)
+            logger.warning(f"Не отправлено {uid}: {err}")
+            failed_reasons.append(f"ID {uid}: {err[:100]}...")
+
     report = f"Завершено:\nУспешно: {success}\nНе удалось: {failed}\nВсего: {len(recipients)}"
+
+    if failed_reasons:
+        report += "\n\nПричины неудач:\n" + "\n".join(failed_reasons[:5])
+
     if hasattr(event, 'reply'):
         await event.reply(report)
     else:
