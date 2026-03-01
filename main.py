@@ -22,12 +22,14 @@ DB_PATH = "/app/data/subscribers.db"
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 # Логирование
-logging.basicConfig(level=logging.INFO,
-                    format='%(asctime)s | %(levelname)-7s | %(message)s',
-                    datefmt='%Y-%m-%d %H:%M:%S')
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)-7s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
 logger = logging.getLogger(__name__)
 
-# База
+# База данных
 conn = sqlite3.connect(DB_PATH, timeout=10)
 cur = conn.cursor()
 cur.execute('''CREATE TABLE IF NOT EXISTS users (
@@ -55,7 +57,7 @@ class BroadcastStates(StatesGroup):
     select_audience = State()
     waiting_for_user_list = State()
 
-# Вспомогательные функции (без изменений)
+# Вспомогательные функции
 def generate_task():
     a = random.randint(10, 35)
     b = random.randint(1, a - 5)
@@ -74,7 +76,7 @@ def save_user(user: types.User, attempts_used: int):
                 (user.id, username, user.first_name, now, attempts_used))
     conn.commit()
 
-# Хендлеры капчи (без изменений)
+# Хендлеры капчи
 @router.message(CommandStart())
 async def start_handler(message: types.Message, state: FSMContext):
     text = "📜 **Правила канала ВЫШЕ ТОЛЬКО ГОРЫ**\n\n• Обязательная подписка\n• Запрещены: спам, оскорбления\n\nПройдите проверку ↓"
@@ -147,7 +149,7 @@ async def admin_menu(message: types.Message):
     ])
     await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
 
-# Главный обработчик всех callback
+# Универсальный callback-хендлер
 @router.callback_query()
 async def universal_callback_handler(callback: types.CallbackQuery, state: FSMContext):
     logger.info(f"[CALLBACK] Получен от {callback.from_user.id}: {callback.data}")
@@ -233,7 +235,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
 
     await callback.answer()
 
-# Обработка сообщения для рассылки
+# Обработка сообщения для рассылки (с текстовым предпросмотром)
 @router.message(BroadcastStates.waiting_for_message)
 async def process_broadcast_content(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
@@ -241,25 +243,49 @@ async def process_broadcast_content(message: types.Message, state: FSMContext):
 
     await state.update_data(broadcast_content=message.model_dump_json(exclude_unset=True))
     
-    preview = "Предпросмотр рассылки:\n\n"
-    if message.text:
-        preview += message.text[:300] + ("..." if len(message.text) > 300 else "")
-    elif message.caption:
-        preview += f"Подпись: {message.caption[:200]}..."
-    else:
-        preview += f"Тип контента: {message.content_type}"
-    
+    # Предпросмотр только текстом
+    preview_text = message.text or message.caption or "Сообщение без текста"
+    preview = f"Предпросмотр рассылки (текстовая версия):\n\n{preview_text[:500]}..."
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Запустить рассылку", callback_data="confirm_broadcast_yes")],
         [InlineKeyboardButton(text="✏️ Изменить", callback_data="broadcast_change")]
     ])
     
+    # Пересылаем оригинал полностью (с картинкой, кнопками, эмодзи)
     await message.forward(chat_id=message.chat.id)
-    await message.answer(preview + "\n\nПодтвердите или измените ↓", reply_markup=kb)
+    await message.answer(
+        preview + "\n\n(картинка, кнопки и анимированные эмодзи сохранятся при рассылке)\nПодтвердите или измените ↓",
+        reply_markup=kb
+    )
     
     await state.set_state(BroadcastStates.confirm_broadcast)
 
-# Обработка списка ID (выборочно)
+# Выбор аудитории и рассылка
+@router.callback_query(F.data == "confirm_broadcast_yes", BroadcastStates.confirm_broadcast)
+async def ask_audience(callback: types.CallbackQuery, state: FSMContext):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Всем", callback_data="audience_all")],
+        [InlineKeyboardButton(text="Выборочно по ID", callback_data="audience_select")],
+        [InlineKeyboardButton(text="Отмена", callback_data="broadcast_cancel")]
+    ])
+    await callback.message.edit_text("Кому отправить?", reply_markup=kb)
+    await state.set_state(BroadcastStates.select_audience)
+    await callback.answer()
+
+@router.callback_query(F.data == "audience_all", BroadcastStates.select_audience)
+async def broadcast_to_all(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Рассылка запущена → всем...")
+    await callback.answer()
+    await do_broadcast(callback, state, "all")
+    await state.clear()
+
+@router.callback_query(F.data == "audience_select", BroadcastStates.select_audience)
+async def ask_selective_list(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Пришлите user_id (по строкам, пробелам или запятым)")
+    await state.set_state(BroadcastStates.waiting_for_user_list)
+    await callback.answer()
+
 @router.message(BroadcastStates.waiting_for_user_list)
 async def process_selective_list(message: types.Message, state: FSMContext):
     raw = message.text.strip()
@@ -318,7 +344,7 @@ async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
     else:
         await event.message.answer(report)
 
-# Импорт базы (без изменений)
+# Импорт базы
 @router.message(F.document & (F.from_user.id == ADMIN_ID))
 async def process_import_db(message: types.Message):
     if not message.document.file_name.lower().endswith(('.db', '.sqlite', '.sqlite3')):
