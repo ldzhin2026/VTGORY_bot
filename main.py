@@ -41,7 +41,7 @@ cur.execute('''CREATE TABLE IF NOT EXISTS users (
 )''')
 conn.commit()
 
-# Aiogram — СОЗДАЁМ ROUTER ЗДЕСЬ (важно, чтобы router существовал до декораторов!)
+# Aiogram
 bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
@@ -76,7 +76,7 @@ def save_user(user: types.User, attempts_used: int):
                 (user.id, username, user.first_name, now, attempts_used))
     conn.commit()
 
-# Хендлеры — все ниже создания router
+# Хендлеры
 
 @router.message(CommandStart())
 async def start_handler(message: types.Message, state: FSMContext):
@@ -134,7 +134,7 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             await state.clear()
             await callback.answer("Исчерпано", show_alert=True)
 
-# Админ-меню (текстовая команда)
+# Админ-меню
 @router.message(F.text.in_({"/admin", "/menu", "/help", "/", "/start"}))
 async def admin_menu(message: types.Message):
     if message.from_user.id != ADMIN_ID:
@@ -150,7 +150,7 @@ async def admin_menu(message: types.Message):
     ])
     await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
 
-# Универсальный обработчик всех callback от кнопок
+# Универсальный обработчик всех кнопок меню
 @router.callback_query()
 async def universal_callback_handler(callback: types.CallbackQuery, state: FSMContext):
     logger.info(f"[CALLBACK] Получен от {callback.from_user.id}: data={callback.data}")
@@ -165,7 +165,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
         if data == "admin_broadcast":
             await callback.message.edit_text("Отправьте сообщение для рассылки (текст, фото, видео и т.д.)")
             await state.set_state(BroadcastStates.waiting_for_message)
-            await callback.answer("Начало рассылки")
+            await callback.answer("Ожидаю сообщение")
 
         elif data == "admin_importdb":
             await callback.message.edit_text("Пришлите файл базы (.db) для импорта")
@@ -217,9 +217,177 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
 
     await callback.answer()
 
+# Обработка сообщения для рассылки (когда админ отправляет текст/фото после нажатия кнопки)
+@router.message(BroadcastStates.waiting_for_message)
+async def process_broadcast_content(message: types.Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+
+    logger.info(f"[РАССЫЛКА] Получено сообщение от админа {message.from_user.id}")
+    
+    await state.update_data(broadcast_content=message.model_dump_json(exclude_unset=True))
+    
+    preview = "Предпросмотр рассылки:\n\n"
+    if message.text:
+        preview += message.text[:300] + ("..." if len(message.text) > 300 else "")
+    elif message.caption:
+        preview += f"Подпись: {message.caption[:200]}..."
+    else:
+        preview += f"Тип контента: {message.content_type}"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Запустить рассылку", callback_data="confirm_broadcast_yes")],
+        [InlineKeyboardButton(text="✏️ Отправить другое", callback_data="broadcast_cancel")]
+    ])
+    
+    await message.forward(chat_id=message.chat.id)
+    await message.answer(preview + "\n\nПодтвердите или отмените ↓", reply_markup=kb)
+    
+    await state.set_state(BroadcastStates.confirm_broadcast)
+
+# Дальше — продолжение рассылки (предпросмотр → выбор аудитории → отправка)
+@router.callback_query(F.data == "confirm_broadcast_yes", BroadcastStates.confirm_broadcast)
+async def ask_audience(callback: types.CallbackQuery, state: FSMContext):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Всем", callback_data="audience_all")],
+        [InlineKeyboardButton(text="Выборочно по ID", callback_data="audience_select")],
+        [InlineKeyboardButton(text="Отмена", callback_data="broadcast_cancel")]
+    ])
+    await callback.message.edit_text("Кому отправить?", reply_markup=kb)
+    await state.set_state(BroadcastStates.select_audience)
+    await callback.answer()
+
+@router.callback_query(F.data == "audience_all", BroadcastStates.select_audience)
+async def broadcast_to_all(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Рассылка → всем...")
+    await callback.answer()
+    await do_broadcast(callback, state, "all")
+    await state.clear()
+
+@router.callback_query(F.data == "audience_select", BroadcastStates.select_audience)
+async def ask_selective_list(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Пришлите user_id (по строкам, через пробел/запятую)")
+    await state.set_state(BroadcastStates.waiting_for_user_list)
+    await callback.answer()
+
+@router.message(BroadcastStates.waiting_for_user_list)
+async def process_selective_list(message: types.Message, state: FSMContext):
+    raw = message.text.strip()
+    if not raw:
+        await message.reply("Пусто. Отмена.")
+        await state.clear()
+        return
+    ids = [int(p.strip()) for p in raw.replace(",", " ").split() if p.strip().isdigit()]
+    if not ids:
+        await message.reply("Нет валидных ID.")
+        return
+    unique = list(set(ids))
+    await message.reply(f"Рассылка → {len(unique)} ID...")
+    await do_broadcast(message, state, "selective", unique)
+    await state.clear()
+
+async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
+    data = await state.get_data()
+    content_json = data.get("broadcast_content")
+    if not content_json:
+        text = "Сообщение не найдено. Начните заново."
+        if hasattr(event, 'reply'):
+            await event.reply(text)
+        else:
+            await event.message.answer(text)
+        return
+    msg = types.Message.model_validate_json(content_json)
+    if target == "all":
+        cur.execute("SELECT user_id FROM users")
+        recipients = [r[0] for r in cur.fetchall()]
+    elif target == "selective" and user_ids:
+        placeholders = ",".join("?" for _ in user_ids)
+        cur.execute(f"SELECT user_id FROM users WHERE user_id IN ({placeholders})", user_ids)
+        recipients = [r[0] for r in cur.fetchall()]
+    else:
+        recipients = []
+    if not recipients:
+        text = "Нет получателей."
+        if hasattr(event, 'reply'):
+            await event.reply(text)
+        else:
+            await event.message.answer(text)
+        return
+    success = failed = 0
+    for uid in recipients:
+        try:
+            await msg.send_copy(chat_id=uid)
+            success += 1
+            await asyncio.sleep(0.35)
+        except Exception as e:
+            failed += 1
+            logger.warning(f"Не отправлено {uid}: {e}")
+    report = f"Завершено:\nУспешно: {success}\nНе удалось: {failed}\nВсего: {len(recipients)}"
+    if hasattr(event, 'reply'):
+        await event.reply(report)
+    else:
+        await event.message.answer(report)
+
+@router.callback_query(F.data == "broadcast_cancel")
+async def cancel_broadcast(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.edit_text("Отменено")
+    await callback.answer()
+
+# Импорт базы
+@router.message(F.document & (F.from_user.id == ADMIN_ID))
+async def process_import_db(message: types.Message):
+    if not message.document.file_name.lower().endswith(('.db', '.sqlite', '.sqlite3')):
+        return
+    await message.reply("Обрабатываю...")
+    file = await bot.get_file(message.document.file_id)
+    tmp = f"/tmp/import_{int(datetime.now().timestamp())}.db"
+    await bot.download_file(file.file_path, tmp)
+    try:
+        ic = sqlite3.connect(tmp)
+        icur = ic.cursor()
+        icur.execute("SELECT user_id, username, first_name, joined_at, attempts_used FROM users")
+        rows = icur.fetchall()
+        ic.close()
+        added = skipped = 0
+        for uid, un, fn, ja, au in rows:
+            cur.execute("SELECT 1 FROM users WHERE user_id = ?", (uid,))
+            if cur.fetchone():
+                skipped += 1
+                continue
+            cur.execute(
+                "INSERT INTO users VALUES (?, ?, ?, ?, ?)",
+                (uid, un, fn or "imported", ja or datetime.now().isoformat(), au or 0)
+            )
+            conn.commit()
+            added += 1
+        os.remove(tmp)
+        await message.reply(f"Импорт: +{added} | уже было {skipped} | всего {len(rows)}")
+    except Exception as e:
+        await message.reply(f"Ошибка: {str(e)}")
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+# Добавление по username
+@router.message(F.text.startswith("/addusernames"))
+async def add_usernames(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    lines = [l.strip().lstrip("@") for l in message.text.splitlines()[1:] if l.strip()]
+    if not lines:
+        await message.reply("Список пуст.")
+        return
+    added = 0
+    for un in lines:
+        if un:
+            fake = types.User(id=0, is_bot=False, first_name="imported", username=un)
+            save_user(fake, 0)
+            added += 1
+    await message.reply(f"Добавлено {added} username (user_id=0)")
+
 # Запуск
 async def main():
-    logger.info("Бот запущен — ожидаем обновления...")
+    logger.info("Бот запущен")
     await dp.start_polling(
         bot,
         allowed_updates=["message", "callback_query"]
