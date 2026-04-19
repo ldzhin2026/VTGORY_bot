@@ -128,7 +128,7 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="🛠️ МОДЕРАТОР", url="https://t.me/ModTolkogori")],
             [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")]
         ])
-        await callback.message.reply("✅ Пройдено!\nДобро пожаловать!", reply_markup=kb, parse_mode="Markdown")
+        await callback.message.reply("✅ Пройдено!\nДобро пожаловать!\nЕсли вы выиграли на стриме и готовы получить 1000р на игровой кабинет, необходимо сделать следующее:\n1. Зарегистрироваться по ссылке ниже в казино Dragon Money\n2. Прислать модератору в личку по ссылке ниже свой ID от игрового кабинета\n3. Получить 1000 рублей с возмоностью вывода денег. \n p.s. Начисление возможно только нашему рефералу (тому кто зарегистрировался по нашей ссылке)", reply_markup=kb, parse_mode="Markdown")
         await state.clear()
         await callback.answer("Успех!")
     else:
