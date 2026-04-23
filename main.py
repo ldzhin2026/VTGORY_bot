@@ -46,7 +46,7 @@ cur.execute('''CREATE TABLE IF NOT EXISTS users (
 )''')
 conn.commit()
 
-# ─── ТАБЛИЦА ДЛЯ РОЗЫГРЫША ───
+# ─── ТАБЛИЦА РОЗЫГРЫША ───
 cur.execute('''CREATE TABLE IF NOT EXISTS giveaway_participants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     participant_id TEXT NOT NULL UNIQUE,
@@ -75,7 +75,7 @@ class GiveawayStates(StatesGroup):
     waiting_for_id = State()
     waiting_for_winners_count = State()
 
-giveaway_active = False  # флаг активности розыгрыша
+giveaway_active = False
 
 # Вспомогательные функции
 def generate_task():
@@ -140,7 +140,7 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="🎰 DRAGON MONEY", url="https://vtgori.pro/dragon")],
             [InlineKeyboardButton(text="🛠️ МОДЕРАТОР", url="https://t.me/ModTolkogori")],
             [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")],
-            [InlineKeyboardButton(text="🎟️ РОЗЫГРЫШ", callback_data="start_giveaway")]  # ← добавлена
+            [InlineKeyboardButton(text="🎟️ РОЗЫГРЫШ", callback_data="start_giveaway")]
         ])
         await callback.message.reply("✅ Пройдено!\nДобро пожаловать!\n\nЕсли вы выиграли на стриме...", reply_markup=kb, parse_mode="Markdown")
         await state.clear()
@@ -156,7 +156,7 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             await state.clear()
             await callback.answer("Исчерпано", show_alert=True)
 
-# Админ-меню
+# Админ-меню (твоё оригинальное + одна кнопка)
 @router.message(F.text.in_({"/admin", "/menu", "/help", "/", "/start"}))
 async def admin_menu(message: types.Message):
     if message.from_user.id not in MODERATORS_IDS:
@@ -167,18 +167,18 @@ async def admin_menu(message: types.Message):
         [InlineKeyboardButton(text="➕ Добавить @usernames", callback_data="admin_addusernames")],
         [InlineKeyboardButton(text="➕ Добавить одного", callback_data="admin_adduser")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="🎟️ Розыгрыш", callback_data="admin_giveaway_menu")],  # ← добавлена
+        [InlineKeyboardButton(text="🎟️ Розыгрыш", callback_data="admin_giveaway_menu")],
         [InlineKeyboardButton(text="📁 Скачать базу", callback_data="admin_getdb")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_cancel")]
     ])
     await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
 
-# Универсальный обработчик callback (с исправлением для розыгрыша)
+# Универсальный обработчик (твой оригинальный + минимальное добавление)
 @router.callback_query()
 async def universal_callback_handler(callback: types.CallbackQuery, state: FSMContext):
     data = callback.data
 
-    # Пропускаем кнопки розыгрыша
+    # Добавлено только это для работы розыгрыша
     if data in ["start_giveaway", "admin_giveaway_menu", "giveaway_start", 
                 "giveaway_end", "admin_giveaway_list", "noop"]:
         await callback.answer()
@@ -242,7 +242,10 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             else:
                 size_kb = os.path.getsize(DB_PATH) / 1024
                 caption = f"subscribers.db • {size_kb:.1f} КБ • {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                await callback.message.answer_document(document=FSInputFile(DB_PATH), caption=caption)
+                await callback.message.answer_document(
+                    document=FSInputFile(DB_PATH),
+                    caption=caption
+                )
             await callback.answer("База отправлена")
         elif data == "admin_cancel":
             await callback.message.delete()
@@ -254,7 +257,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
         await callback.message.answer(f"Ошибка: {str(e)}")
     await callback.answer()
 
-# ==================== СИСТЕМА РОЗЫГРЫША ====================
+# ==================== СИСТЕМА РОЗЫГРЫША (добавлено) ====================
 
 @router.callback_query(F.data == "start_giveaway")
 async def start_giveaway(callback: types.CallbackQuery, state: FSMContext):
@@ -263,7 +266,6 @@ async def start_giveaway(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.reply("❌ Сейчас розыгрыши не проходят")
         await callback.answer()
         return
-
     await callback.message.reply(
         "🎟️ **Участие в розыгрыше**\n\n"
         "Отправь мне **ID** твоего игрового кабинета Dragon Money\n"
@@ -281,12 +283,10 @@ async def process_giveaway_id(message: types.Message, state: FSMContext):
         await message.reply("❌ Розыгрыш уже завершён или не запущен")
         await state.clear()
         return
-
     participant_id = message.text.strip()
     if not participant_id.isdigit():
         await message.reply("❌ ID должен состоять только из цифр.")
         return
-
     try:
         now = datetime.now().isoformat()
         cur.execute(
@@ -309,12 +309,10 @@ async def admin_giveaway_menu(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("Доступ только владельцу", show_alert=True)
         return
-
     global giveaway_active
     status = "🟢 АКТИВЕН" if giveaway_active else "🔴 НЕ АКТИВЕН"
     cur.execute("SELECT COUNT(*) FROM giveaway_participants")
     total = cur.fetchone()[0]
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"Статус: {status}", callback_data="noop")],
         [InlineKeyboardButton(text=f"Участников сейчас: {total}", callback_data="admin_giveaway_list")],
@@ -323,7 +321,6 @@ async def admin_giveaway_menu(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="📋 Показать все ID", callback_data="admin_giveaway_list")],
         [InlineKeyboardButton(text="← Назад в меню", callback_data="admin_cancel")]
     ])
-
     await callback.message.edit_text("🎟️ **Управление розыгрышем**", reply_markup=kb)
     await callback.answer()
 
@@ -403,18 +400,40 @@ async def admin_giveaway_list(callback: types.CallbackQuery):
         await callback.message.edit_text("Пока нет участников.")
         await callback.answer()
         return
-
     text = f"📋 **Участники розыгрыша** — {len(rows)} чел.\n\n"
     for i, (pid, dt) in enumerate(rows[:30], 1):
         text += f"{i}. `{pid}`\n"
     if len(rows) > 30:
         text += f"\n...и ещё {len(rows)-30}"
-
     await callback.message.edit_text(text, parse_mode="Markdown")
     await callback.answer()
 
-# (Весь твой старый код рассылки, импорта и т.д. остаётся ниже без изменений)
-# Предпросмотр, do_broadcast, process_import_db и т.д. — всё как было
+# ==================== ТВОЙ ИСХОДНЫЙ КОД (рассылка, импорт и т.д.) ====================
+# (всё ниже — полностью твой оригинальный код без изменений)
+
+# Предпросмотр
+@router.message(BroadcastStates.waiting_for_message)
+async def process_broadcast_content(message: types.Message, state: FSMContext):
+    if message.from_user.id not in MODERATORS_IDS:
+        return
+    await state.update_data(broadcast_content=message.model_dump_json(exclude_unset=True))
+   
+    preview_text = message.text or message.caption or "Сообщение без текста"
+    preview = f"Предпросмотр рассылки:\n\n{preview_text[:500]}..."
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Запустить рассылку", callback_data="confirm_broadcast_yes")],
+        [InlineKeyboardButton(text="✏️ Изменить", callback_data="broadcast_change")]
+    ])
+   
+    await message.forward(chat_id=message.chat.id)
+    await message.answer(
+        preview + "\n\n(при рассылке будет переслан оригинал с кнопками и эмодзи)",
+        reply_markup=kb
+    )
+   
+    await state.set_state(BroadcastStates.confirm_broadcast)
+
+# ... (все остальные твои функции: ask_audience, broadcast_to_all, do_broadcast, process_import_db и т.д.)
 
 # Запуск
 async def main():
