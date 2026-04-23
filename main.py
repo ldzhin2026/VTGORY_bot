@@ -56,7 +56,7 @@ class GiveawayStates(StatesGroup):
 
 giveaway_active = False
 
-# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
 def generate_task():
     a = random.randint(10, 35)
     b = random.randint(1, a - 5)
@@ -75,7 +75,7 @@ def save_user(user: types.User, attempts_used: int):
                 (user.id, username, user.first_name, now, attempts_used))
     conn.commit()
 
-# ==================== ОСНОВНЫЕ ХЕНДЛЕРЫ ====================
+# ==================== ХЕНДЛЕРЫ ====================
 
 @router.message(CommandStart())
 async def start_handler(message: types.Message, state: FSMContext):
@@ -86,8 +86,7 @@ async def start_handler(message: types.Message, state: FSMContext):
             await message.answer_photo(FSInputFile(PHOTO_PATH), caption=text, reply_markup=kb, parse_mode="Markdown")
         else:
             await message.answer(text, reply_markup=kb, parse_mode="Markdown")
-    except Exception as e:
-        logger.warning(f"Ошибка фото: {e}")
+    except:
         await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
 @router.callback_query(F.data == "start_captcha")
@@ -112,7 +111,6 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
     except:
         await callback.answer("Ошибка", show_alert=True)
         return
-
     if answer == correct:
         save_user(callback.from_user, attempts_used + 1)
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -146,52 +144,39 @@ async def start_giveaway(callback: types.CallbackQuery, state: FSMContext):
         await callback.message.reply("❌ Сейчас розыгрыши не проходят")
         await callback.answer()
         return
-
-    await callback.message.reply(
-        "🎟️ **Участие в розыгрыше**\n\n"
-        "Отправь мне **ID** твоего игрового кабинета Dragon Money\n(только цифры, без пробелов)",
-        parse_mode="Markdown"
-    )
+    await callback.message.reply("🎟️ **Участие в розыгрыше**\n\nОтправь мне **ID** игрового кабинета (только цифры)", parse_mode="Markdown")
     await state.set_state(GiveawayStates.waiting_for_id)
     await callback.answer()
-
 
 @router.message(GiveawayStates.waiting_for_id)
 async def process_giveaway_id(message: types.Message, state: FSMContext):
     global giveaway_active
     if not giveaway_active:
-        await message.reply("❌ Розыгрыш уже завершён")
+        await message.reply("❌ Розыгрыш завершён")
         await state.clear()
         return
-
     pid = message.text.strip()
     if not pid.isdigit():
-        await message.reply("❌ ID должен состоять только из цифр.")
+        await message.reply("❌ Только цифры!")
         return
-
     try:
         cur.execute("INSERT OR IGNORE INTO giveaway_participants (participant_id, entered_at) VALUES (?, ?)",
                     (pid, datetime.now().isoformat()))
         conn.commit()
-        text = "✅ Ты успешно участвуешь в розыгрыше!" if cur.rowcount > 0 else "⚠️ Этот ID уже участвует."
-        await message.reply(text)
-    except Exception as e:
-        await message.reply("Ошибка при записи ID.")
-        logger.error(e)
+        await message.reply("✅ Ты участвуешь в розыгрыше!" if cur.rowcount > 0 else "⚠️ Этот ID уже добавлен.")
+    except:
+        await message.reply("Ошибка записи.")
     await state.clear()
-
 
 @router.callback_query(F.data == "admin_giveaway_menu")
 async def admin_giveaway_menu(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Доступ только у владельца", show_alert=True)
+        await callback.answer("Только владелец", show_alert=True)
         return
-
     global giveaway_active
     status = "🟢 АКТИВЕН" if giveaway_active else "🔴 НЕ АКТИВЕН"
     cur.execute("SELECT COUNT(*) FROM giveaway_participants")
     total = cur.fetchone()[0]
-
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"Статус: {status}", callback_data="noop")],
         [InlineKeyboardButton(text=f"Участников: {total}", callback_data="admin_giveaway_list")],
@@ -200,71 +185,59 @@ async def admin_giveaway_menu(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="📋 Показать участников", callback_data="admin_giveaway_list")],
         [InlineKeyboardButton(text="← Назад", callback_data="admin_cancel")]
     ])
-
     await callback.message.edit_text("🎟️ **Управление розыгрышем**", reply_markup=kb)
     await callback.answer()
-
 
 @router.callback_query(F.data == "giveaway_start")
 async def giveaway_start(callback: types.CallbackQuery):
     global giveaway_active
     giveaway_active = True
-    await callback.message.edit_text("✅ Розыгрыш **запущен**! Пользователи могут отправлять ID.")
-    await callback.answer("Запущен")
-
+    await callback.message.edit_text("✅ Розыгрыш запущен!")
+    await callback.answer()
 
 @router.callback_query(F.data == "giveaway_end")
 async def giveaway_end(callback: types.CallbackQuery, state: FSMContext):
     global giveaway_active
     if not giveaway_active:
-        await callback.answer("Розыгрыш не активен", show_alert=True)
+        await callback.answer("Не активен", show_alert=True)
         return
-    await callback.message.edit_text("🏁 Сколько победителей выбрать?\nНапиши число:")
+    await callback.message.edit_text("🏁 Сколько победителей выбрать? Напиши число:")
     await state.set_state(GiveawayStates.waiting_for_winners_count)
     await callback.answer()
-
 
 @router.message(GiveawayStates.waiting_for_winners_count)
 async def process_winners_count(message: types.Message, state: FSMContext):
     global giveaway_active
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id != ADMIN_ID: 
         await state.clear()
         return
     try:
         count = int(message.text.strip())
         if count < 1: raise ValueError
     except:
-        await message.reply("❌ Введи положительное число")
+        await message.reply("❌ Введи число")
         return
 
     cur.execute("SELECT participant_id FROM giveaway_participants")
-    all_ids = [row[0] for row in cur.fetchall()]
-
+    all_ids = [r[0] for r in cur.fetchall()]
     if not all_ids:
-        await message.reply("Нет участников.")
+        await message.reply("Нет участников")
         giveaway_active = False
         await state.clear()
         return
 
-    pref_ids = [pid for pid in all_ids if pid.startswith("1083")]
-    winners = []
+    pref = [x for x in all_ids if x.startswith("1083")]
+    winners = random.sample(pref, k=min(round(count*0.8), len(pref))) if pref else []
 
-    num_pref = max(1, round(count * 0.8))
-    if pref_ids:
-        winners.extend(random.sample(pref_ids, k=min(num_pref, len(pref_ids))))
+    rem = count - len(winners)
+    if rem > 0:
+        others = [x for x in all_ids if x not in winners]
+        winners += random.sample(others, k=min(rem, len(others)))
 
-    remaining = count - len(winners)
-    if remaining > 0:
-        pool = [pid for pid in all_ids if pid not in winners]
-        if pool:
-            winners.extend(random.sample(pool, k=min(remaining, len(pool))))
-
-    winners = list(dict.fromkeys(winners))[:count]
-
-    text = f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\nВыбрано: **{len(winners)}** из {len(all_ids)}\n\n🏆 **Победители:**\n"
+    winners = winners[:count]
+    text = f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\nПобедителей: {len(winners)}\n\n"
     for i, w in enumerate(winners, 1):
         text += f"{i}. `{w}`\n"
-
     await message.reply(text, parse_mode="Markdown")
 
     cur.execute("DELETE FROM giveaway_participants")
@@ -272,27 +245,21 @@ async def process_winners_count(message: types.Message, state: FSMContext):
     giveaway_active = False
     await state.clear()
 
-
 @router.callback_query(F.data == "admin_giveaway_list")
 async def admin_giveaway_list(callback: types.CallbackQuery):
     cur.execute("SELECT participant_id, entered_at FROM giveaway_participants ORDER BY id DESC")
     rows = cur.fetchall()
     if not rows:
-        await callback.message.edit_text("Пока нет участников.")
+        await callback.message.edit_text("Участников нет")
         await callback.answer()
         return
-
-    text = f"📋 **Участники** — {len(rows)}\n\n"
+    text = f"📋 Участники — {len(rows)}\n\n"
     for i, (pid, dt) in enumerate(rows[:30], 1):
         text += f"{i}. `{pid}`\n"
-    if len(rows) > 30:
-        text += f"\n...и ещё {len(rows)-30}"
-
     await callback.message.edit_text(text, parse_mode="Markdown")
     await callback.answer()
 
-# ==================== АДМИН МЕНЮ И УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК ====================
-
+# ==================== АДМИН МЕНЮ ====================
 @router.message(F.text.in_({"/admin", "/menu", "/help", "/", "/start"}))
 async def admin_menu(message: types.Message):
     if message.from_user.id not in MODERATORS_IDS: return
@@ -308,11 +275,14 @@ async def admin_menu(message: types.Message):
     ])
     await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
 
+# ==================== УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК (ВАЖНО!) ====================
 @router.callback_query()
 async def universal_callback_handler(callback: types.CallbackQuery, state: FSMContext):
     data = callback.data
-    if data in ["start_giveaway", "admin_giveaway_menu", "giveaway_start", "giveaway_end", 
-                "admin_giveaway_list", "noop"]:
+
+    # Пропускаем кнопки розыгрыша
+    if data in ["start_giveaway", "admin_giveaway_menu", "giveaway_start", 
+                "giveaway_end", "admin_giveaway_list", "noop"]:
         await callback.answer()
         return
 
@@ -320,12 +290,36 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
         await callback.answer("Нет доступа", show_alert=True)
         return
 
-    # ... (сюда можно добавить старые обработчики рассылки при необходимости)
+    if data in ["admin_stats", "admin_getdb"] and callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только владелец", show_alert=True)
+        return
+
+    try:
+        if data == "admin_broadcast":
+            await callback.message.edit_text("Отправьте сообщение для рассылки")
+            await state.set_state(BroadcastStates.waiting_for_message)
+        elif data == "admin_stats":
+            cur.execute("SELECT COUNT(*) FROM users")
+            total = cur.fetchone()[0]
+            text = f"Всего пользователей: {total}"
+            await callback.message.edit_text(text)
+        elif data == "admin_getdb":
+            if os.path.exists(DB_PATH):
+                await callback.message.answer_document(FSInputFile(DB_PATH), caption="subscribers.db")
+            else:
+                await callback.message.answer("База не найдена")
+        elif data == "admin_cancel":
+            await callback.message.delete()
+        else:
+            await callback.answer(f"Неизвестная кнопка: {data}", show_alert=True)
+    except Exception as e:
+        logger.error(f"Ошибка: {e}")
+        await callback.message.answer("Ошибка выполнения")
     await callback.answer()
 
 # ==================== ЗАПУСК ====================
 async def main():
-    logger.info("Бот запущен с системой розыгрыша")
+    logger.info("Бот запущен")
     await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
 
 if __name__ == "__main__":
