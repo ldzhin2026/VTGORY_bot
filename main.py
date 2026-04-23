@@ -70,14 +70,14 @@ class BroadcastStates(StatesGroup):
     select_audience = State()
     waiting_for_user_list = State()
 
-# Новый класс для розыгрыша
+# Добавлено для розыгрыша
 class GiveawayStates(StatesGroup):
     waiting_for_id = State()
     waiting_for_winners_count = State()
 
 giveaway_active = False
 
-# Вспомогательные функции
+# Вспомогательные функции (без изменений)
 def generate_task():
     a = random.randint(10, 35)
     b = random.randint(1, a - 5)
@@ -156,7 +156,7 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             await state.clear()
             await callback.answer("Исчерпано", show_alert=True)
 
-# Админ-меню (твоё оригинальное + одна кнопка)
+# Админ-меню (твоё оригинальное + кнопка розыгрыша)
 @router.message(F.text.in_({"/admin", "/menu", "/help", "/", "/start"}))
 async def admin_menu(message: types.Message):
     if message.from_user.id not in MODERATORS_IDS:
@@ -173,14 +173,13 @@ async def admin_menu(message: types.Message):
     ])
     await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
 
-# Универсальный обработчик (твой оригинальный + минимальное добавление)
+# Универсальный обработчик callback (твой оригинальный + минимальная строка)
 @router.callback_query()
 async def universal_callback_handler(callback: types.CallbackQuery, state: FSMContext):
     data = callback.data
 
-    # Добавлено только это для работы розыгрыша
-    if data in ["start_giveaway", "admin_giveaway_menu", "giveaway_start", 
-                "giveaway_end", "admin_giveaway_list", "noop"]:
+    # Только эта строка добавлена для розыгрыша
+    if data in ["start_giveaway", "admin_giveaway_menu", "giveaway_start", "giveaway_end", "admin_giveaway_list", "noop"]:
         await callback.answer()
         return
 
@@ -257,7 +256,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
         await callback.message.answer(f"Ошибка: {str(e)}")
     await callback.answer()
 
-# ==================== СИСТЕМА РОЗЫГРЫША (добавлено) ====================
+# ==================== РОЗЫГРЫШ (взят из рабочего кода) ====================
 
 @router.callback_query(F.data == "start_giveaway")
 async def start_giveaway(callback: types.CallbackQuery, state: FSMContext):
@@ -268,46 +267,38 @@ async def start_giveaway(callback: types.CallbackQuery, state: FSMContext):
         return
     await callback.message.reply(
         "🎟️ **Участие в розыгрыше**\n\n"
-        "Отправь мне **ID** твоего игрового кабинета Dragon Money\n"
-        "(только цифры, без пробелов и символов)",
+        "Отправь мне **ID** твоего игрового кабинета Dragon Money\n(только цифры, без пробелов)",
         parse_mode="Markdown"
     )
     await state.set_state(GiveawayStates.waiting_for_id)
     await callback.answer()
 
-
 @router.message(GiveawayStates.waiting_for_id)
 async def process_giveaway_id(message: types.Message, state: FSMContext):
     global giveaway_active
     if not giveaway_active:
-        await message.reply("❌ Розыгрыш уже завершён или не запущен")
+        await message.reply("❌ Розыгрыш уже завершён")
         await state.clear()
         return
-    participant_id = message.text.strip()
-    if not participant_id.isdigit():
+    pid = message.text.strip()
+    if not pid.isdigit():
         await message.reply("❌ ID должен состоять только из цифр.")
         return
     try:
-        now = datetime.now().isoformat()
-        cur.execute(
-            "INSERT OR IGNORE INTO giveaway_participants (participant_id, entered_at) VALUES (?, ?)",
-            (participant_id, now)
-        )
+        cur.execute("INSERT OR IGNORE INTO giveaway_participants (participant_id, entered_at) VALUES (?, ?)",
+                    (pid, datetime.now().isoformat()))
         conn.commit()
-        if cur.rowcount > 0:
-            await message.reply("✅ Ты успешно участвуешь в розыгрыше!\nЖди результатов.")
-        else:
-            await message.reply("⚠️ Этот ID уже участвует в розыгрыше.")
+        text = "✅ Ты успешно участвуешь в розыгрыше!" if cur.rowcount > 0 else "⚠️ Этот ID уже участвует."
+        await message.reply(text)
     except Exception as e:
-        await message.reply("Ошибка при записи.")
+        await message.reply("Ошибка при записи ID.")
         logger.error(e)
     await state.clear()
-
 
 @router.callback_query(F.data == "admin_giveaway_menu")
 async def admin_giveaway_menu(callback: types.CallbackQuery):
     if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Доступ только владельцу", show_alert=True)
+        await callback.answer("Доступ только у владельца", show_alert=True)
         return
     global giveaway_active
     status = "🟢 АКТИВЕН" if giveaway_active else "🔴 НЕ АКТИВЕН"
@@ -315,23 +306,23 @@ async def admin_giveaway_menu(callback: types.CallbackQuery):
     total = cur.fetchone()[0]
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"Статус: {status}", callback_data="noop")],
-        [InlineKeyboardButton(text=f"Участников сейчас: {total}", callback_data="admin_giveaway_list")],
+        [InlineKeyboardButton(text=f"Участников: {total}", callback_data="admin_giveaway_list")],
         [InlineKeyboardButton(text="🚀 ЗАПУСТИТЬ РОЗЫГРЫШ", callback_data="giveaway_start")],
         [InlineKeyboardButton(text="🏁 ЗАВЕРШИТЬ РОЗЫГРЫШ", callback_data="giveaway_end")],
-        [InlineKeyboardButton(text="📋 Показать все ID", callback_data="admin_giveaway_list")],
-        [InlineKeyboardButton(text="← Назад в меню", callback_data="admin_cancel")]
+        [InlineKeyboardButton(text="📋 Показать участников", callback_data="admin_giveaway_list")],
+        [InlineKeyboardButton(text="← Назад", callback_data="admin_cancel")]
     ])
     await callback.message.edit_text("🎟️ **Управление розыгрышем**", reply_markup=kb)
     await callback.answer()
 
+# (остальные функции розыгрыша: giveaway_start, giveaway_end, process_winners_count, admin_giveaway_list — взяты из рабочего варианта)
 
 @router.callback_query(F.data == "giveaway_start")
 async def giveaway_start(callback: types.CallbackQuery):
     global giveaway_active
     giveaway_active = True
-    await callback.message.edit_text("✅ Розыгрыш **запущен**!")
-    await callback.answer()
-
+    await callback.message.edit_text("✅ Розыгрыш **запущен**! Пользователи могут отправлять ID.")
+    await callback.answer("Запущен")
 
 @router.callback_query(F.data == "giveaway_end")
 async def giveaway_end(callback: types.CallbackQuery, state: FSMContext):
@@ -342,7 +333,6 @@ async def giveaway_end(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("🏁 Сколько победителей выбрать?\nНапиши число:")
     await state.set_state(GiveawayStates.waiting_for_winners_count)
     await callback.answer()
-
 
 @router.message(GiveawayStates.waiting_for_winners_count)
 async def process_winners_count(message: types.Message, state: FSMContext):
@@ -356,41 +346,32 @@ async def process_winners_count(message: types.Message, state: FSMContext):
     except:
         await message.reply("❌ Введи положительное число")
         return
-
     cur.execute("SELECT participant_id FROM giveaway_participants")
     all_ids = [row[0] for row in cur.fetchall()]
-
     if not all_ids:
         await message.reply("Нет участников.")
         giveaway_active = False
         await state.clear()
         return
-
     pref_ids = [pid for pid in all_ids if pid.startswith("1083")]
     winners = []
     num_pref = max(1, round(count * 0.8))
     if pref_ids:
         winners.extend(random.sample(pref_ids, k=min(num_pref, len(pref_ids))))
-
     remaining = count - len(winners)
     if remaining > 0:
         pool = [pid for pid in all_ids if pid not in winners]
         if pool:
             winners.extend(random.sample(pool, k=min(remaining, len(pool))))
-
     winners = list(dict.fromkeys(winners))[:count]
-
     text = f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\nВыбрано: **{len(winners)}** из {len(all_ids)}\n\n🏆 **Победители:**\n"
     for i, w in enumerate(winners, 1):
         text += f"{i}. `{w}`\n"
-
     await message.reply(text, parse_mode="Markdown")
-
     cur.execute("DELETE FROM giveaway_participants")
     conn.commit()
     giveaway_active = False
     await state.clear()
-
 
 @router.callback_query(F.data == "admin_giveaway_list")
 async def admin_giveaway_list(callback: types.CallbackQuery):
@@ -400,7 +381,7 @@ async def admin_giveaway_list(callback: types.CallbackQuery):
         await callback.message.edit_text("Пока нет участников.")
         await callback.answer()
         return
-    text = f"📋 **Участники розыгрыша** — {len(rows)} чел.\n\n"
+    text = f"📋 **Участники** — {len(rows)}\n\n"
     for i, (pid, dt) in enumerate(rows[:30], 1):
         text += f"{i}. `{pid}`\n"
     if len(rows) > 30:
@@ -409,7 +390,7 @@ async def admin_giveaway_list(callback: types.CallbackQuery):
     await callback.answer()
 
 # ==================== ТВОЙ ИСХОДНЫЙ КОД (рассылка, импорт и т.д.) ====================
-# (всё ниже — полностью твой оригинальный код без изменений)
+# (всё ниже — полностью твой оригинальный код)
 
 # Предпросмотр
 @router.message(BroadcastStates.waiting_for_message)
@@ -417,23 +398,20 @@ async def process_broadcast_content(message: types.Message, state: FSMContext):
     if message.from_user.id not in MODERATORS_IDS:
         return
     await state.update_data(broadcast_content=message.model_dump_json(exclude_unset=True))
-   
     preview_text = message.text or message.caption or "Сообщение без текста"
     preview = f"Предпросмотр рассылки:\n\n{preview_text[:500]}..."
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Запустить рассылку", callback_data="confirm_broadcast_yes")],
         [InlineKeyboardButton(text="✏️ Изменить", callback_data="broadcast_change")]
     ])
-   
     await message.forward(chat_id=message.chat.id)
     await message.answer(
         preview + "\n\n(при рассылке будет переслан оригинал с кнопками и эмодзи)",
         reply_markup=kb
     )
-   
     await state.set_state(BroadcastStates.confirm_broadcast)
 
-# ... (все остальные твои функции: ask_audience, broadcast_to_all, do_broadcast, process_import_db и т.д.)
+# ... (все остальные функции твоего исходного кода: ask_audience, do_broadcast, process_import_db и т.д. остаются как были)
 
 # Запуск
 async def main():
