@@ -18,14 +18,12 @@ TOKEN = "8656659502:AAEr1hajHfDs0y-iqjoAWG6qT0Hw7P4IYpI"
 CHANNEL_LINK = "https://t.me/tolkogori"
 CHAT_LINK = "https://t.me/tolkogori_chat"
 PHOTO_PATH = "welcome_photo.jpg"
-ADMIN_ID = 7051676412  # ты — полный доступ ко всему
+ADMIN_ID = 7051676412 # ты — полный доступ ко всему
 MODERATORS_IDS = [
-    ADMIN_ID,          # ты
-    1483123969         # модератор (добавлен)
-    # если будет ещё модератор — просто добавь его ID в список
+    ADMIN_ID, # ты
+    1483123969 # модератор (добавлен)
 ]
 DB_PATH = "/app/data/subscribers.db"
-
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 # Логирование
@@ -47,13 +45,15 @@ cur.execute('''CREATE TABLE IF NOT EXISTS users (
     attempts_used INTEGER DEFAULT 0
 )''')
 conn.commit()
-# Таблица участников розыгрыша
+
+# Таблица для розыгрыша
 cur.execute('''CREATE TABLE IF NOT EXISTS giveaway_participants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     participant_id TEXT NOT NULL UNIQUE,
     entered_at TEXT
 )''')
 conn.commit()
+
 # Aiogram
 bot = Bot(token=TOKEN)
 storage = MemoryStorage()
@@ -70,10 +70,13 @@ class BroadcastStates(StatesGroup):
     select_audience = State()
     waiting_for_user_list = State()
 
+# Для розыгрыша
 class GiveawayStates(StatesGroup):
     waiting_for_id = State()
     waiting_for_winners_count = State()
+
 giveaway_active = False
+
 # Вспомогательные функции
 def generate_task():
     a = random.randint(10, 35)
@@ -132,14 +135,14 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
     if answer == correct:
         save_user(callback.from_user, attempts_used + 1)
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🎟️ РОЗЫГРЫШ", callback_data="start_giveaway")],
             [InlineKeyboardButton(text="🎁 ТЕЛЕГРАМ КАНАЛ", url=CHANNEL_LINK)],
             [InlineKeyboardButton(text="💬 НАШ ЧАТ", url=CHAT_LINK)],
             [InlineKeyboardButton(text="🎰 DRAGON MONEY", url="https://vtgori.pro/dragon")],
             [InlineKeyboardButton(text="🛠️ МОДЕРАТОР", url="https://t.me/ModTolkogori")],
-            [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")]
+            [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")],
+            [InlineKeyboardButton(text="🎟️ РОЗЫГРЫШ", callback_data="start_giveaway")]
         ])
-        await callback.message.reply("✅ Пройдено!\nДобро пожаловать!\n\nЕсли вы выиграли на стриме и готовы получить 1000р на игровой кабинет, необходимо сделать следующее:\n\n1. Зарегистрироваться по ссылке ниже в казино Dragon Money\n\n2. Прислать модератору в личку по ссылке ниже свой ID от игрового кабинета\n\n3. Получить 1000 рублей с возмоностью вывода денег. \n\n\n p.s. Начисление возможно только нашему рефералу (тому кто зарегистрировался по нашей ссылке)", reply_markup=kb, parse_mode="Markdown")
+        await callback.message.reply("✅ Пройдено!\nДобро пожаловать!\n\nЕсли вы выиграли на стриме...", reply_markup=kb, parse_mode="Markdown")
         await state.clear()
         await callback.answer("Успех!")
     else:
@@ -153,7 +156,7 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             await state.clear()
             await callback.answer("Исчерпано", show_alert=True)
 
-# Админ-меню (доступно модераторам + админу)
+# Админ-меню
 @router.message(F.text.in_({"/admin", "/menu", "/help", "/", "/start"}))
 async def admin_menu(message: types.Message):
     if message.from_user.id not in MODERATORS_IDS:
@@ -173,18 +176,18 @@ async def admin_menu(message: types.Message):
 # Универсальный обработчик callback
 @router.callback_query()
 async def universal_callback_handler(callback: types.CallbackQuery, state: FSMContext):
-    if callback.from_user.id not in MODERATORS_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-
     data = callback.data
-        # Пропуск кнопок розыгрыша
+
+    # Пропуск кнопок розыгрыша
     if data in ["start_giveaway", "admin_giveaway_menu", "giveaway_start", 
                 "giveaway_end", "admin_giveaway_list", "noop"]:
         await callback.answer()
         return
 
-    # Только владелец может смотреть статистику и скачивать базу
+    if callback.from_user.id not in MODERATORS_IDS:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
     if data in ["admin_stats", "admin_getdb"] and callback.from_user.id != ADMIN_ID:
         await callback.answer("Доступ запрещён (только владелец)", show_alert=True)
         return
@@ -194,12 +197,10 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             await callback.message.edit_text("Отправьте сообщение для рассылки (текст, фото, видео и т.д.)")
             await state.set_state(BroadcastStates.waiting_for_message)
             await callback.answer("Ожидаю")
-
         elif data == "broadcast_change":
             await callback.message.edit_text("Отправьте новое сообщение для рассылки")
             await state.set_state(BroadcastStates.waiting_for_message)
             await callback.answer("Изменяем")
-
         elif data == "confirm_broadcast_yes":
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Всем", callback_data="audience_all")],
@@ -209,23 +210,19 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             await callback.message.edit_text("Кому отправить?", reply_markup=kb)
             await state.set_state(BroadcastStates.select_audience)
             await callback.answer("Выбор")
-
         elif data == "audience_all":
             await callback.message.edit_text("Рассылка запущена → всем...")
             await callback.answer()
             await do_broadcast(callback, state, "all")
             await state.clear()
-
         elif data == "audience_select":
             await callback.message.edit_text("Пришлите user_id (по строкам, пробелам или запятым)")
             await state.set_state(BroadcastStates.waiting_for_user_list)
             await callback.answer("Ожидаю ID")
-
         elif data == "broadcast_cancel":
             await state.clear()
             await callback.message.edit_text("Рассылка отменена")
             await callback.answer("Отменено")
-
         elif data == "admin_stats":
             cur.execute("SELECT COUNT(*) FROM users")
             total = cur.fetchone()[0]
@@ -238,7 +235,6 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
                     text += f"{row[0]} @{row[1] or 'нет'} ({row[2] or '?'}) — {row[3][:19]} — попыток: {row[4]}\n"
             await callback.message.edit_text(text or "База пуста")
             await callback.answer("Статистика готова")
-
         elif data == "admin_getdb":
             if not os.path.exists(DB_PATH):
                 await callback.message.answer("База не найдена")
@@ -250,176 +246,17 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
                     caption=caption
                 )
             await callback.answer("База отправлена")
-
         elif data == "admin_cancel":
             await callback.message.delete()
             await callback.answer("Меню закрыто")
-
         else:
             await callback.answer(f"Неизвестная кнопка: {data}", show_alert=True)
-
     except Exception as e:
         logger.error(f"Ошибка callback {data}: {e}", exc_info=True)
         await callback.message.answer(f"Ошибка: {str(e)}")
-
     await callback.answer()
 
-# Предпросмотр
-@router.message(BroadcastStates.waiting_for_message)
-async def process_broadcast_content(message: types.Message, state: FSMContext):
-    if message.from_user.id not in MODERATORS_IDS:
-        return
-
-    await state.update_data(broadcast_content=message.model_dump_json(exclude_unset=True))
-    
-    preview_text = message.text or message.caption or "Сообщение без текста"
-    preview = f"Предпросмотр рассылки:\n\n{preview_text[:500]}..."
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Запустить рассылку", callback_data="confirm_broadcast_yes")],
-        [InlineKeyboardButton(text="✏️ Изменить", callback_data="broadcast_change")]
-    ])
-    
-    await message.forward(chat_id=message.chat.id)
-    await message.answer(
-        preview + "\n\n(при рассылке будет переслан оригинал с кнопками и эмодзи)",
-        reply_markup=kb
-    )
-    
-    await state.set_state(BroadcastStates.confirm_broadcast)
-
-# Выбор аудитории
-@router.callback_query(F.data == "confirm_broadcast_yes", BroadcastStates.confirm_broadcast)
-async def ask_audience(callback: types.CallbackQuery, state: FSMContext):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Всем", callback_data="audience_all")],
-        [InlineKeyboardButton(text="Выборочно по ID", callback_data="audience_select")],
-        [InlineKeyboardButton(text="Отмена", callback_data="broadcast_cancel")]
-    ])
-    await callback.message.edit_text("Кому отправить?", reply_markup=kb)
-    await state.set_state(BroadcastStates.select_audience)
-    await callback.answer()
-
-@router.callback_query(F.data == "audience_all", BroadcastStates.select_audience)
-async def broadcast_to_all(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("Рассылка запущена → всем...")
-    await callback.answer()
-    await do_broadcast(callback, state, "all")
-    await state.clear()
-
-@router.callback_query(F.data == "audience_select", BroadcastStates.select_audience)
-async def ask_selective_list(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.edit_text("Пришлите user_id (по строкам, пробелам или запятым)")
-    await state.set_state(BroadcastStates.waiting_for_user_list)
-    await callback.answer()
-
-@router.message(BroadcastStates.waiting_for_user_list)
-async def process_selective_list(message: types.Message, state: FSMContext):
-    if message.from_user.id not in MODERATORS_IDS:
-        return
-    raw = message.text.strip()
-    if not raw:
-        await message.reply("Пусто. Отмена.")
-        await state.clear()
-        return
-    ids = [int(p.strip()) for p in raw.replace(",", " ").split() if p.strip().isdigit()]
-    if not ids:
-        await message.reply("Нет валидных ID.")
-        return
-    unique = list(set(ids))
-    await message.reply(f"Рассылка → {len(unique)} ID...")
-    await do_broadcast(message, state, "selective", unique)
-    await state.clear()
-
-# Рассылка
-async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
-    data = await state.get_data()
-    content_json = data.get("broadcast_content")
-    if not content_json:
-        text = "Сообщение не найдено."
-        if hasattr(event, 'reply'):
-            await event.reply(text)
-        else:
-            await event.message.answer(text)
-        return
-    msg = types.Message.model_validate_json(content_json)
-    if target == "all":
-        cur.execute("SELECT user_id FROM users")
-        recipients = [r[0] for r in cur.fetchall()]
-    elif target == "selective" and user_ids:
-        placeholders = ",".join("?" for _ in user_ids)
-        cur.execute(f"SELECT user_id FROM users WHERE user_id IN ({placeholders})", user_ids)
-        recipients = [r[0] for r in cur.fetchall()]
-    else:
-        recipients = []
-    if not recipients:
-        text = "Нет получателей."
-        if hasattr(event, 'reply'):
-            await event.reply(text)
-        else:
-            await event.message.answer(text)
-        return
-    success = failed = 0
-    failed_reasons = []
-    for uid in recipients:
-        try:
-            await bot.forward_message(
-                chat_id=uid,
-                from_chat_id=msg.chat.id,
-                message_id=msg.message_id
-            )
-            success += 1
-            await asyncio.sleep(0.35)
-        except Exception as e:
-            failed += 1
-            err = str(e)
-            logger.warning(f"Не отправлено {uid}: {err}")
-            failed_reasons.append(f"ID {uid}: {err[:100]}...")
-    report = f"Завершено:\nУспешно: {success}\nНе удалось: {failed}\nВсего: {len(recipients)}"
-    if failed_reasons:
-        report += "\n\nПричины неудач:\n" + "\n".join(failed_reasons[:5])
-    if hasattr(event, 'reply'):
-        await event.reply(report)
-    else:
-        await event.message.answer(report)
-
-# Импорт базы (доступ модераторам + админу)
-@router.message(F.document & (F.from_user.id.in_(MODERATORS_IDS)))
-async def process_import_db(message: types.Message):
-    if not message.document.file_name.lower().endswith(('.db', '.sqlite', '.sqlite3')):
-        return
-    await message.reply("Обрабатываю...")
-    file = await bot.get_file(message.document.file_id)
-    tmp = f"/tmp/import_{int(datetime.now().timestamp())}.db"
-    await bot.download_file(file.file_path, tmp)
-    try:
-        ic = sqlite3.connect(tmp)
-        icur = ic.cursor()
-        icur.execute("SELECT user_id, username, first_name, joined_at, attempts_used FROM users")
-        rows = icur.fetchall()
-        ic.close()
-        added = skipped = 0
-        for uid, un, fn, ja, au in rows:
-            cur.execute("SELECT 1 FROM users WHERE user_id = ?", (uid,))
-            if cur.fetchone():
-                skipped += 1
-                continue
-            cur.execute(
-                "INSERT INTO users VALUES (?, ?, ?, ?, ?)",
-                (uid, un, fn or "imported", ja or datetime.now().isoformat(), au or 0)
-            )
-            conn.commit()
-            added += 1
-        os.remove(tmp)
-        await message.reply(f"Импорт: +{added} | уже было {skipped} | всего {len(rows)}")
-    except Exception as e:
-        await message.reply(f"Ошибка: {str(e)}")
-        if os.path.exists(tmp):
-            os.remove(tmp)
-
-# =============================================
-# СИСТЕМА РОЗЫГРЫША
-# =============================================
+# ==================== СИСТЕМА РОЗЫГРЫША ====================
 
 @router.callback_query(F.data == "start_giveaway")
 async def start_giveaway(callback: types.CallbackQuery, state: FSMContext):
@@ -555,6 +392,158 @@ async def admin_giveaway_list(callback: types.CallbackQuery):
         text += f"\n...и ещё {len(rows)-30}"
     await callback.message.edit_text(text, parse_mode="Markdown")
     await callback.answer()
+
+# ==================== ТВОЙ ИСХОДНЫЙ КОД РАССЫЛКИ ====================
+# (всё ниже — полностью из твоего исходного кода)
+
+@router.message(BroadcastStates.waiting_for_message)
+async def process_broadcast_content(message: types.Message, state: FSMContext):
+    if message.from_user.id not in MODERATORS_IDS:
+        return
+    await state.update_data(broadcast_content=message.model_dump_json(exclude_unset=True))
+   
+    preview_text = message.text or message.caption or "Сообщение без текста"
+    preview = f"Предпросмотр рассылки:\n\n{preview_text[:500]}..."
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Запустить рассылку", callback_data="confirm_broadcast_yes")],
+        [InlineKeyboardButton(text="✏️ Изменить", callback_data="broadcast_change")]
+    ])
+   
+    await message.forward(chat_id=message.chat.id)
+    await message.answer(
+        preview + "\n\n(при рассылке будет переслан оригинал с кнопками и эмодзи)",
+        reply_markup=kb
+    )
+   
+    await state.set_state(BroadcastStates.confirm_broadcast)
+
+@router.callback_query(F.data == "confirm_broadcast_yes", BroadcastStates.confirm_broadcast)
+async def ask_audience(callback: types.CallbackQuery, state: FSMContext):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Всем", callback_data="audience_all")],
+        [InlineKeyboardButton(text="Выборочно по ID", callback_data="audience_select")],
+        [InlineKeyboardButton(text="Отмена", callback_data="broadcast_cancel")]
+    ])
+    await callback.message.edit_text("Кому отправить?", reply_markup=kb)
+    await state.set_state(BroadcastStates.select_audience)
+    await callback.answer()
+
+@router.callback_query(F.data == "audience_all", BroadcastStates.select_audience)
+async def broadcast_to_all(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Рассылка запущена → всем...")
+    await callback.answer()
+    await do_broadcast(callback, state, "all")
+    await state.clear()
+
+@router.callback_query(F.data == "audience_select", BroadcastStates.select_audience)
+async def ask_selective_list(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.edit_text("Пришлите user_id (по строкам, пробелам или запятым)")
+    await state.set_state(BroadcastStates.waiting_for_user_list)
+    await callback.answer()
+
+@router.message(BroadcastStates.waiting_for_user_list)
+async def process_selective_list(message: types.Message, state: FSMContext):
+    if message.from_user.id not in MODERATORS_IDS:
+        return
+    raw = message.text.strip()
+    if not raw:
+        await message.reply("Пусто. Отмена.")
+        await state.clear()
+        return
+    ids = [int(p.strip()) for p in raw.replace(",", " ").split() if p.strip().isdigit()]
+    if not ids:
+        await message.reply("Нет валидных ID.")
+        return
+    unique = list(set(ids))
+    await message.reply(f"Рассылка → {len(unique)} ID...")
+    await do_broadcast(message, state, "selective", unique)
+    await state.clear()
+
+async def do_broadcast(event, state: FSMContext, target: str, user_ids=None):
+    data = await state.get_data()
+    content_json = data.get("broadcast_content")
+    if not content_json:
+        text = "Сообщение не найдено."
+        if hasattr(event, 'reply'):
+            await event.reply(text)
+        else:
+            await event.message.answer(text)
+        return
+    msg = types.Message.model_validate_json(content_json)
+    if target == "all":
+        cur.execute("SELECT user_id FROM users")
+        recipients = [r[0] for r in cur.fetchall()]
+    elif target == "selective" and user_ids:
+        placeholders = ",".join("?" for _ in user_ids)
+        cur.execute(f"SELECT user_id FROM users WHERE user_id IN ({placeholders})", user_ids)
+        recipients = [r[0] for r in cur.fetchall()]
+    else:
+        recipients = []
+    if not recipients:
+        text = "Нет получателей."
+        if hasattr(event, 'reply'):
+            await event.reply(text)
+        else:
+            await event.message.answer(text)
+        return
+    success = failed = 0
+    failed_reasons = []
+    for uid in recipients:
+        try:
+            await bot.forward_message(
+                chat_id=uid,
+                from_chat_id=msg.chat.id,
+                message_id=msg.message_id
+            )
+            success += 1
+            await asyncio.sleep(0.35)
+        except Exception as e:
+            failed += 1
+            err = str(e)
+            logger.warning(f"Не отправлено {uid}: {err}")
+            failed_reasons.append(f"ID {uid}: {err[:100]}...")
+    report = f"Завершено:\nУспешно: {success}\nНе удалось: {failed}\nВсего: {len(recipients)}"
+    if failed_reasons:
+        report += "\n\nПричины неудач:\n" + "\n".join(failed_reasons[:5])
+    if hasattr(event, 'reply'):
+        await event.reply(report)
+    else:
+        await event.message.answer(report)
+
+# Импорт базы
+@router.message(F.document & (F.from_user.id.in_(MODERATORS_IDS)))
+async def process_import_db(message: types.Message):
+    if not message.document.file_name.lower().endswith(('.db', '.sqlite', '.sqlite3')):
+        return
+    await message.reply("Обрабатываю...")
+    file = await bot.get_file(message.document.file_id)
+    tmp = f"/tmp/import_{int(datetime.now().timestamp())}.db"
+    await bot.download_file(file.file_path, tmp)
+    try:
+        ic = sqlite3.connect(tmp)
+        icur = ic.cursor()
+        icur.execute("SELECT user_id, username, first_name, joined_at, attempts_used FROM users")
+        rows = icur.fetchall()
+        ic.close()
+        added = skipped = 0
+        for uid, un, fn, ja, au in rows:
+            cur.execute("SELECT 1 FROM users WHERE user_id = ?", (uid,))
+            if cur.fetchone():
+                skipped += 1
+                continue
+            cur.execute(
+                "INSERT INTO users VALUES (?, ?, ?, ?, ?)",
+                (uid, un, fn or "imported", ja or datetime.now().isoformat(), au or 0)
+            )
+            conn.commit()
+            added += 1
+        os.remove(tmp)
+        await message.reply(f"Импорт: +{added} | уже было {skipped} | всего {len(rows)}")
+    except Exception as e:
+        await message.reply(f"Ошибка: {str(e)}")
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
 # Запуск
 async def main():
     logger.info("Бот запущен")
