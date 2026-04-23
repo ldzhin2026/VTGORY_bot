@@ -24,7 +24,6 @@ MODERATORS_IDS = [ADMIN_ID, 1483123969]
 DB_PATH = "/app/data/subscribers.db"
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
-# Логирование
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s | %(levelname)-7s | %(message)s',
@@ -32,7 +31,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# База данных
 conn = sqlite3.connect(DB_PATH, timeout=10)
 cur = conn.cursor()
 cur.execute('''CREATE TABLE IF NOT EXISTS users (
@@ -52,7 +50,6 @@ cur.execute('''CREATE TABLE IF NOT EXISTS giveaway_participants (
 )''')
 conn.commit()
 
-# Aiogram
 bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
@@ -153,103 +150,6 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             await callback.message.reply("❌ Попытки кончились. /start")
             await state.clear()
             await callback.answer("Исчерпано", show_alert=True)
-
-# Админ-меню
-@router.message(F.text.in_({"/admin", "/menu", "/help", "/", "/start"}))
-async def admin_menu(message: types.Message):
-    if message.from_user.id not in MODERATORS_IDS:
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📤 Рассылка", callback_data="admin_broadcast")],
-        [InlineKeyboardButton(text="📥 Импорт базы", callback_data="admin_importdb")],
-        [InlineKeyboardButton(text="➕ Добавить @usernames", callback_data="admin_addusernames")],
-        [InlineKeyboardButton(text="➕ Добавить одного", callback_data="admin_adduser")],
-        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="🎟️ Розыгрыш", callback_data="admin_giveaway_menu")],
-        [InlineKeyboardButton(text="📁 Скачать базу", callback_data="admin_getdb")],
-        [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_cancel")]
-    ])
-    await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
-
-# Универсальный обработчик (с исправлением)
-@router.callback_query()
-async def universal_callback_handler(callback: types.CallbackQuery, state: FSMContext):
-    data = callback.data
-
-    # Важно для розыгрыша
-    if data in ["start_giveaway", "admin_giveaway_menu", "giveaway_start", 
-                "giveaway_end", "admin_giveaway_list", "noop"]:
-        await callback.answer()
-        return
-
-    if callback.from_user.id not in MODERATORS_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
-
-    if data in ["admin_stats", "admin_getdb"] and callback.from_user.id != ADMIN_ID:
-        await callback.answer("Доступ запрещён (только владелец)", show_alert=True)
-        return
-
-    try:
-        if data == "admin_broadcast":
-            await callback.message.edit_text("Отправьте сообщение для рассылки (текст, фото, видео и т.д.)")
-            await state.set_state(BroadcastStates.waiting_for_message)
-            await callback.answer("Ожидаю")
-        elif data == "broadcast_change":
-            await callback.message.edit_text("Отправьте новое сообщение для рассылки")
-            await state.set_state(BroadcastStates.waiting_for_message)
-            await callback.answer("Изменяем")
-        elif data == "confirm_broadcast_yes":
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Всем", callback_data="audience_all")],
-                [InlineKeyboardButton(text="Выборочно по ID", callback_data="audience_select")],
-                [InlineKeyboardButton(text="Отмена", callback_data="broadcast_cancel")]
-            ])
-            await callback.message.edit_text("Кому отправить?", reply_markup=kb)
-            await state.set_state(BroadcastStates.select_audience)
-            await callback.answer("Выбор")
-        elif data == "audience_all":
-            await callback.message.edit_text("Рассылка запущена → всем...")
-            await callback.answer()
-            await do_broadcast(callback, state, "all")
-            await state.clear()
-        elif data == "audience_select":
-            await callback.message.edit_text("Пришлите user_id (по строкам, пробелам или запятым)")
-            await state.set_state(BroadcastStates.waiting_for_user_list)
-            await callback.answer("Ожидаю ID")
-        elif data == "broadcast_cancel":
-            await state.clear()
-            await callback.message.edit_text("Рассылка отменена")
-            await callback.answer("Отменено")
-        elif data == "admin_stats":
-            cur.execute("SELECT COUNT(*) FROM users")
-            total = cur.fetchone()[0]
-            text = f"Всего пользователей: {total}"
-            if total > 0:
-                cur.execute("SELECT user_id, username, first_name, joined_at, attempts_used FROM users ORDER BY joined_at DESC LIMIT 5")
-                rows = cur.fetchall()
-                text += "\n\nПоследние 5:\n"
-                for row in rows:
-                    text += f"{row[0]} @{row[1] or 'нет'} ({row[2] or '?'}) — {row[3][:19]} — попыток: {row[4]}\n"
-            await callback.message.edit_text(text or "База пуста")
-            await callback.answer("Статистика готова")
-        elif data == "admin_getdb":
-            if not os.path.exists(DB_PATH):
-                await callback.message.answer("База не найдена")
-            else:
-                size_kb = os.path.getsize(DB_PATH) / 1024
-                caption = f"subscribers.db • {size_kb:.1f} КБ • {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                await callback.message.answer_document(document=FSInputFile(DB_PATH), caption=caption)
-            await callback.answer("База отправлена")
-        elif data == "admin_cancel":
-            await callback.message.delete()
-            await callback.answer("Меню закрыто")
-        else:
-            await callback.answer(f"Неизвестная кнопка: {data}", show_alert=True)
-    except Exception as e:
-        logger.error(f"Ошибка callback {data}: {e}", exc_info=True)
-        await callback.message.answer(f"Ошибка: {str(e)}")
-    await callback.answer()
 
 # ==================== РОЗЫГРЫШ ====================
 
@@ -394,7 +294,103 @@ async def admin_giveaway_list(callback: types.CallbackQuery):
     await callback.message.edit_text(text, parse_mode="Markdown")
     await callback.answer()
 
-# ==================== РАССЫЛКА (твой исходный код) ====================
+# ==================== АДМИН МЕНЮ ====================
+@router.message(F.text.in_({"/admin", "/menu", "/help", "/", "/start"}))
+async def admin_menu(message: types.Message):
+    if message.from_user.id not in MODERATORS_IDS:
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📤 Рассылка", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="📥 Импорт базы", callback_data="admin_importdb")],
+        [InlineKeyboardButton(text="➕ Добавить @usernames", callback_data="admin_addusernames")],
+        [InlineKeyboardButton(text="➕ Добавить одного", callback_data="admin_adduser")],
+        [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
+        [InlineKeyboardButton(text="🎟️ Розыгрыш", callback_data="admin_giveaway_menu")],
+        [InlineKeyboardButton(text="📁 Скачать базу", callback_data="admin_getdb")],
+        [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_cancel")]
+    ])
+    await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
+
+# ==================== УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК ====================
+@router.callback_query()
+async def universal_callback_handler(callback: types.CallbackQuery, state: FSMContext):
+    data = callback.data
+
+    if data in ["start_giveaway", "admin_giveaway_menu", "giveaway_start", 
+                "giveaway_end", "admin_giveaway_list", "noop"]:
+        await callback.answer()
+        return
+
+    if callback.from_user.id not in MODERATORS_IDS:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+
+    if data in ["admin_stats", "admin_getdb"] and callback.from_user.id != ADMIN_ID:
+        await callback.answer("Доступ запрещён (только владелец)", show_alert=True)
+        return
+
+    try:
+        if data == "admin_broadcast":
+            await callback.message.edit_text("Отправьте сообщение для рассылки (текст, фото, видео и т.д.)")
+            await state.set_state(BroadcastStates.waiting_for_message)
+            await callback.answer("Ожидаю")
+        elif data == "broadcast_change":
+            await callback.message.edit_text("Отправьте новое сообщение для рассылки")
+            await state.set_state(BroadcastStates.waiting_for_message)
+            await callback.answer("Изменяем")
+        elif data == "confirm_broadcast_yes":
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Всем", callback_data="audience_all")],
+                [InlineKeyboardButton(text="Выборочно по ID", callback_data="audience_select")],
+                [InlineKeyboardButton(text="Отмена", callback_data="broadcast_cancel")]
+            ])
+            await callback.message.edit_text("Кому отправить?", reply_markup=kb)
+            await state.set_state(BroadcastStates.select_audience)
+            await callback.answer("Выбор")
+        elif data == "audience_all":
+            await callback.message.edit_text("Рассылка запущена → всем...")
+            await callback.answer()
+            await do_broadcast(callback, state, "all")
+            await state.clear()
+        elif data == "audience_select":
+            await callback.message.edit_text("Пришлите user_id (по строкам, пробелам или запятым)")
+            await state.set_state(BroadcastStates.waiting_for_user_list)
+            await callback.answer("Ожидаю ID")
+        elif data == "broadcast_cancel":
+            await state.clear()
+            await callback.message.edit_text("Рассылка отменена")
+            await callback.answer("Отменено")
+        elif data == "admin_stats":
+            cur.execute("SELECT COUNT(*) FROM users")
+            total = cur.fetchone()[0]
+            text = f"Всего пользователей: {total}"
+            if total > 0:
+                cur.execute("SELECT user_id, username, first_name, joined_at, attempts_used FROM users ORDER BY joined_at DESC LIMIT 5")
+                rows = cur.fetchall()
+                text += "\n\nПоследние 5:\n"
+                for row in rows:
+                    text += f"{row[0]} @{row[1] or 'нет'} ({row[2] or '?'}) — {row[3][:19]} — попыток: {row[4]}\n"
+            await callback.message.edit_text(text or "База пуста")
+            await callback.answer("Статистика готова")
+        elif data == "admin_getdb":
+            if not os.path.exists(DB_PATH):
+                await callback.message.answer("База не найдена")
+            else:
+                size_kb = os.path.getsize(DB_PATH) / 1024
+                caption = f"subscribers.db • {size_kb:.1f} КБ • {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                await callback.message.answer_document(document=FSInputFile(DB_PATH), caption=caption)
+            await callback.answer("База отправлена")
+        elif data == "admin_cancel":
+            await callback.message.delete()
+            await callback.answer("Меню закрыто")
+        else:
+            await callback.answer(f"Неизвестная кнопка: {data}", show_alert=True)
+    except Exception as e:
+        logger.error(f"Ошибка callback {data}: {e}", exc_info=True)
+        await callback.message.answer(f"Ошибка: {str(e)}")
+    await callback.answer()
+
+# ==================== ТВОЯ РАССЫЛКА (исходная) ====================
 
 @router.message(BroadcastStates.waiting_for_message)
 async def process_broadcast_content(message: types.Message, state: FSMContext):
@@ -411,7 +407,7 @@ async def process_broadcast_content(message: types.Message, state: FSMContext):
     await message.answer(preview + "\n\n(при рассылке будет переслан оригинал)", reply_markup=kb)
     await state.set_state(BroadcastStates.confirm_broadcast)
 
-# (добавь сюда остальные функции рассылки из твоего исходного кода, если они отсутствуют)
+# (Вставь сюда остальные функции рассылки из твоего исходного кода: ask_audience, broadcast_to_all, process_selective_list, do_broadcast, process_import_db)
 
 # Запуск
 async def main():
