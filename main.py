@@ -144,13 +144,13 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             "Привет дорогой друг!🤚\n\n"
             "Для участия в розыгрыше необходимо сделать следующее:\n\n"
             "✍️ 1. Зарегистрироваться по ссылке ниже в Dragon Money "
-            "(<a href='https://telegra.ph/INSTRUKCIYA-DLYA-UCHASTIYA-04-24/'>инструкция здесь</a>)\n\n"
+            "[инструкция здесь](https://telegra.ph/INSTRUKCIYA-DLYA-UCHASTIYA-04-24/)\n\n"
             "🎁 2. Нажать на кнопку «РОЗЫГРЫШ» ниже и вставить ID аккаунта от Dragon Money\n\n"
             "🏆 3. Если ты выиграл в розыгрыше, тогда получишь 1000 руб. с возможностью вывода денег.\n\n"
             "☝️ Начисление возможно только нашему рефералу (тому кто зарегистрировался по нашей ссылке)"
         )
         
-        await callback.message.reply(text, reply_markup=kb, parse_mode="HTML")
+        await callback.message.reply(text, reply_markup=kb, parse_mode="Markdown")
         await state.clear()
         await callback.answer("Успех!")
     else:
