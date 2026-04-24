@@ -139,27 +139,20 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="🎟️ РОЗЫГРЫШ", callback_data="start_giveaway")]
         ])
         
-text = (
-            "✅ Пройдено!\n\n"
+        text = (
+            "✅ Пройдено!\n"
             "Привет дорогой друг!🤚\n\n"
             "Так как спонсором наших эфиров является DragonMoney, то 1000 руб. мы закидываем на игровой кабинет "
             "(баланс будет в криптовалюте, не забудь поменять с рублей на крипту в настройках).\n\n"
             "Если ты выиграл в эфире и готов получить 1000 руб. на игровой кабинет, необходимо сделать следующее:\n\n"
-            "✍️ 1. Зарегистрироваться по ссылке ниже в Dragon Money:\n\n"
-            "https://telegra.ph/INSTRUKCIYA-DLYA-UCHASTIYA-04-24/\n\n"  # ← Голая ссылка (лучше для Instant View)
-            
-            "🎁 2. Нажать на кнопку «РОЗЫГРЫШ» ниже и вставить ID аккаунта от Dragon Money\n\n"
+            "✍️ 1. Зарегистрироваться по ссылке ниже в Dragon Money "
+            "(<a href='https://vtgori.pro/guidegive/'>инструкция здесь</a>)\n"
+            "🎁 2. Нажать на кнопку «РОЗЫГРЫШ» ниже и вставить ID аккаунта от Dragon Money\n"
             "🏆 3. Если ты выиграл в розыгрыше, тогда получишь 1000 руб. с возможностью вывода денег.\n\n"
             "☝️ Начисление возможно только нашему рефералу (тому кто зарегистрировался по нашей ссылке)"
         )
-       
-        await callback.message.reply(
-            text, 
-            reply_markup=kb, 
-            parse_mode="HTML",
-            disable_web_page_preview=True   # ← Убирает большое превью
-        )
         
+        await callback.message.reply(text, reply_markup=kb, parse_mode="HTML")
         await state.clear()
         await callback.answer("Успех!")
     else:
