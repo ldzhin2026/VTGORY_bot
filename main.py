@@ -127,8 +127,9 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
     except:
         await callback.answer("Ошибка", show_alert=True)
         return
-        if answer == correct:
+    if answer == correct:
         save_user(callback.from_user, attempts_used + 1)
+        
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🎁 ТЕЛЕГРАМ КАНАЛ", url=CHANNEL_LINK)],
             [InlineKeyboardButton(text="💬 НАШ ЧАТ", url=CHAT_LINK)],
