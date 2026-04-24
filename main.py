@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 conn = sqlite3.connect(DB_PATH, timeout=10)
 cur = conn.cursor()
+
+# Таблица пользователей (остаётся без изменений)
 cur.execute('''CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     username TEXT,
@@ -40,7 +42,19 @@ cur.execute('''CREATE TABLE IF NOT EXISTS users (
     joined_at TEXT,
     attempts_used INTEGER DEFAULT 0
 )''')
+
+# === РОЗЫГРЫШ: пересоздаём таблицу с новой структурой ===
+cur.execute("DROP TABLE IF EXISTS giveaway_participants")  # удаляем старую
+
+cur.execute('''CREATE TABLE giveaway_participants (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_user_id INTEGER NOT NULL UNIQUE,   -- один TG-пользователь = один ID
+    participant_id TEXT NOT NULL,
+    entered_at TEXT
+)''')
+
 conn.commit()
+print("✅ Таблица giveaway_participants пересоздана с новой структурой")
 
 # Таблица розыгрыша
 cur.execute('''CREATE TABLE IF NOT EXISTS users (
