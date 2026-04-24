@@ -129,7 +129,7 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
         return
     if answer == correct:
         save_user(callback.from_user, attempts_used + 1)
-        
+       
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🎁 ТЕЛЕГРАМ КАНАЛ", url=CHANNEL_LINK)],
             [InlineKeyboardButton(text="💬 НАШ ЧАТ", url=CHAT_LINK)],
@@ -138,7 +138,7 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")],
             [InlineKeyboardButton(text="🎟️ РОЗЫГРЫШ", callback_data="start_giveaway")]
         ])
-        
+       
         text = (
             "✅ Пройдено!\n"
             "Привет дорогой друг!🤚\n\n"
@@ -149,7 +149,7 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             "🏆 3. Если ты выиграл в розыгрыше, тогда получишь 1000 руб. с возможностью вывода денег.\n\n"
             "☝️ Начисление возможно только нашему рефералу (тому кто зарегистрировался по нашей ссылке)"
         )
-        
+       
         await callback.message.reply(text, reply_markup=kb, parse_mode="HTML")
         await state.clear()
         await callback.answer("Успех!")
