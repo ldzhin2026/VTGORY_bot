@@ -158,18 +158,19 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="🎁 ТЕЛЕГРАМ КАНАЛ", url=CHANNEL_LINK)],
             [InlineKeyboardButton(text="💬 НАШ ЧАТ", url=CHAT_LINK)],
             [InlineKeyboardButton(text="🎰 DRAGON MONEY", url="https://vtgori.pro/dragon")],
+            [InlineKeyboardButton(text="🎟️ РОЗЫГРЫШ", callback_data="start_giveaway")],
             [InlineKeyboardButton(text="🛠️ МОДЕРАТОР", url="https://t.me/ModTolkogori")],
-            [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")],
-            [InlineKeyboardButton(text="🎟️ РОЗЫГРЫШ", callback_data="start_giveaway")]
+            [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")]
         ])
         
         text = (
             "✅ Пройдено!\n"
             "Для участия в розыгрыше необходимо сделать следующее:\n\n"
-            "✍️ 1. Зарегистрироваться по ссылке ниже в Dragon Money "
+            "✍️ 1. Подписаться на ТЕЛЕГРАМ КАНАЛ и ЧАТ "
+            "✍️ 2. Зарегистрироваться по ссылке ниже в Dragon Money "
             "(<a href='http://vtgori.pro/guide/'>инструкция здесь</a>)\n\n"
-            "🎁 2. Нажать на кнопку «РОЗЫГРЫШ» ниже и вставить ID аккаунта от Dragon Money\n\n"
-            "🏆 3. Если ты выиграл в розыгрыше, тогда получишь 1000 руб. с возможностью вывода денег.\n\n"
+            "🎁 3. Нажать на кнопку «РОЗЫГРЫШ» ниже и вставить ID аккаунта от Dragon Money\n\n"
+            "🏆 4. Если ты выиграл в розыгрыше, тогда получишь 1000 руб. с возможностью вывода денег.\n\n"
             "☝️ Начисление возможно только нашему рефералу (тому кто зарегистрировался по нашей ссылке)"
         )
         
