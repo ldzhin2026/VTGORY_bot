@@ -43,9 +43,19 @@ cur.execute('''CREATE TABLE IF NOT EXISTS users (
 conn.commit()
 
 # Таблица розыгрыша
+cur.execute('''CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT,
+    first_name TEXT,
+    joined_at TEXT,
+    attempts_used INTEGER DEFAULT 0
+)''')
+
+# Таблица для розыгрыша (один пользователь = один ID)
 cur.execute('''CREATE TABLE IF NOT EXISTS giveaway_participants (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    participant_id TEXT NOT NULL UNIQUE,
+    telegram_user_id INTEGER NOT NULL UNIQUE,   -- главный ключ: один TG = один ID
+    participant_id TEXT NOT NULL,
     entered_at TEXT
 )''')
 conn.commit()
@@ -188,19 +198,48 @@ async def process_giveaway_id(message: types.Message, state: FSMContext):
         await message.reply("❌ Розыгрыш уже завершён")
         await state.clear()
         return
+
     pid = message.text.strip()
     if not pid.isdigit():
         await message.reply("❌ ID должен состоять только из цифр.")
         return
+
+    user_id = message.from_user.id  # ← ID Telegram пользователя
+
     try:
-        cur.execute("INSERT OR IGNORE INTO giveaway_participants (participant_id, entered_at) VALUES (?, ?)",
-                    (pid, datetime.now().isoformat()))
+        # Проверяем, участвовал ли уже этот человек
+        cur.execute("SELECT participant_id FROM giveaway_participants WHERE telegram_user_id = ?", 
+                   (user_id,))
+        existing = cur.fetchone()
+
+        if existing:
+            await message.reply(
+                f"⚠️ Вы уже участвуете в розыгрыше!\n\n"
+                f"Ваш текущий ID: `{existing[0]}`\n\n"
+                "Повторное участие **запрещено**."
+            )
+            await state.clear()
+            return
+
+        # Добавляем нового участника
+        cur.execute(
+            "INSERT INTO giveaway_participants "
+            "(telegram_user_id, participant_id, entered_at) "
+            "VALUES (?, ?, ?)",
+            (user_id, pid, datetime.now().isoformat())
+        )
         conn.commit()
-        text = "✅ Ты успешно участвуешь в розыгрыше!" if cur.rowcount > 0 else "⚠️ Этот ID уже участвует."
-        await message.reply(text)
+
+        await message.reply(
+            "✅ Вы успешно участвуете в розыгрыше!\n\n"
+            f"Ваш ID: `{pid}`\n"
+            "Желаем удачи! 🎉"
+        )
+
     except Exception as e:
-        await message.reply("Ошибка при записи ID.")
-        logger.error(e)
+        await message.reply("❌ Ошибка при записи. Попробуйте ещё раз.")
+        logger.error(f"Giveaway error: {e}")
+
     await state.clear()
 
 
@@ -292,17 +331,25 @@ async def process_winners_count(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin_giveaway_list")
 async def admin_giveaway_list(callback: types.CallbackQuery):
-    cur.execute("SELECT participant_id, entered_at FROM giveaway_participants ORDER BY id DESC")
+    cur.execute("""
+        SELECT telegram_user_id, participant_id, entered_at 
+        FROM giveaway_participants 
+        ORDER BY id DESC
+    """)
     rows = cur.fetchall()
+
     if not rows:
         await callback.message.edit_text("Пока нет участников.")
         await callback.answer()
         return
-    text = f"📋 **Участники** — {len(rows)}\n\n"
-    for i, (pid, dt) in enumerate(rows[:30], 1):
-        text += f"{i}. `{pid}`\n"
+
+    text = f"📋 **Участники розыгрыша** — {len(rows)}\n\n"
+    for i, (tg_id, pid, dt) in enumerate(rows[:30], 1):
+        text += f"{i}. TG:`{tg_id}` → ID:`{pid}`\n"
+
     if len(rows) > 30:
-        text += f"\n...и ещё {len(rows)-30}"
+        text += f"\n...и ещё {len(rows)-30} участников"
+
     await callback.message.edit_text(text, parse_mode="Markdown")
     await callback.answer()
 
