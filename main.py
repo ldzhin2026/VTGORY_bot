@@ -330,6 +330,43 @@ async def process_winners_count(message: types.Message, state: FSMContext):
     winners = []
     num_pref = max(1, round(count * 0.8))
 
+    # 80% из приоритетных
+    if pref_ids:
+        sample_size = min(num_pref, len(pref_ids))
+        winners.extend(random.sample(pref_ids, k=sample_size))
+
+    # Остаток из обычных
+    remaining = count - len(winners)
+    if remaining > 0 and normal_ids:
+        sample_size = min(remaining, len(normal_ids))
+        winners.extend(random.sample(normal_ids, k=sample_size))
+
+    winners = list(dict.fromkeys(winners))[:count]
+
+    # Результат
+    text = f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
+    text += f"Выбрано: **{len(winners)}** из {len(all_ids)} участников\n\n"
+    text += f"🏆 **Победители:**\n"
+
+    for i, w in enumerate(winners, 1):
+        text += f"{i}. `{w}`\n"
+
+    await message.reply(text, parse_mode="Markdown")
+
+    # Очистка
+    cur.execute("DELETE FROM giveaway_participants")
+    conn.commit()
+    giveaway_active = False
+    await state.clear()
+        return
+
+    # === ЛОГИКА ПРИОРИТЕТА ===
+    pref_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) >= 10830000]
+    normal_ids = [pid for pid in all_ids if pid not in pref_ids]
+
+    winners = []
+    num_pref = max(1, round(count * 0.8))
+
     # Берем 80% из приоритетных
     if pref_ids:
         sample_size = min(num_pref, len(pref_ids))
@@ -516,13 +553,13 @@ async def add_test_participants(message: types.Message):
         # === НОВАЯ ЛОГИКА ТЕСТОВЫХ ID ===
         if i < 25:
             # 25 обычных участников (ниже приоритета)
-            pid = f"1079{i:05d}"           # например: 107900123
+            pid = f"1079{i:05d}"
         elif i < 55:
             # 30 приоритетных участников (10830000 и выше)
-            pid = f"1083{i:05d}"           # например: 108300025
+            pid = f"1083{i:05d}"
         else:
-            # 20 высоких ID (ещё больше)
-            pid = f"109{i:06d}"            # например: 109000045
+            # 20 высоких ID
+            pid = f"109{i:06d}"
 
         dt = f"2026-04-27T12:{i//60:02d}:{i%60:02d}"
 
