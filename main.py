@@ -304,19 +304,62 @@ async def process_winners_count(message: types.Message, state: FSMContext):
     if message.from_user.id != ADMIN_ID:
         await state.clear()
         return
+
     try:
         count = int(message.text.strip())
-        if count < 1: raise ValueError
+        if count < 1:
+            raise ValueError
     except:
         await message.reply("❌ Введи положительное число")
         return
 
+    # Получаем всех участников
     cur.execute("SELECT participant_id FROM giveaway_participants")
     all_ids = [row[0] for row in cur.fetchall()]
+
     if not all_ids:
         await message.reply("Нет участников.")
         giveaway_active = False
         await state.clear()
+        return
+
+    # === НОВАЯ ЛОГИКА ПРИОРИТЕТА ===
+    # Приоритетные — ID >= 10830000
+    pref_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) >= 10830000]
+    normal_ids = [pid for pid in all_ids if pid not in pref_ids]
+
+    winners = []
+    num_pref = max(1, round(count * 0.8))   # 80% из приоритетных
+
+    # Выбираем из приоритетной группы
+    if pref_ids:
+        sample_size = min(num_pref, len(pref_ids))
+        winners.extend(random.sample(pref_ids, k=sample_size))
+
+    # Добираем оставшихся из обычных участников
+    remaining = count - len(winners)
+    if remaining > 0 and normal_ids:
+        sample_size = min(remaining, len(normal_ids))
+        winners.extend(random.sample(normal_ids, k=sample_size))
+
+    # Убираем возможные дубликаты
+    winners = list(dict.fromkeys(winners))[:count]
+
+    # Формируем красивое сообщение
+    text = f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
+    text += f"Выбрано: **{len(winners)}** из {len(all_ids)} участников\n\n"
+    text += f"🏆 **Победители:**\n"
+
+    for i, w in enumerate(winners, 1):
+        text += f"{i}. `{w}`\n"
+
+    await message.reply(text, parse_mode="Markdown")
+
+    # Очищаем участников после розыгрыша
+    cur.execute("DELETE FROM giveaway_participants")
+    conn.commit()
+    giveaway_active = False
+    await state.clear()
         return
 
     pref_ids = [pid for pid in all_ids if pid.startswith("1083")]
