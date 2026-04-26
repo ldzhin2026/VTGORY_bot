@@ -434,7 +434,7 @@ async def process_winners_count(message: types.Message, state: FSMContext):
     conn.commit()
     giveaway_active = False
     await state.clear()
-        return
+    return
 
     pref_ids = [pid for pid in all_ids if pid.startswith("1083")]
     winners = []
