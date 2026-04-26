@@ -346,27 +346,60 @@ async def process_winners_count(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin_giveaway_list")
 async def admin_giveaway_list(callback: types.CallbackQuery):
+    """Показывает полный список участников розыгрыша"""
     cur.execute("""
-        SELECT telegram_user_id, participant_id, entered_at 
-        FROM giveaway_participants 
-        ORDER BY id DESC
+        SELECT 
+            g.telegram_user_id,
+            g.participant_id,
+            g.entered_at,
+            u.username,
+            u.first_name
+        FROM giveaway_participants g
+        LEFT JOIN users u ON g.telegram_user_id = u.user_id
+        ORDER BY g.id DESC
     """)
     rows = cur.fetchall()
-
+    
     if not rows:
         await callback.message.edit_text("Пока нет участников.")
         await callback.answer()
         return
 
-    text = f"📋 **Участники розыгрыша** — {len(rows)}\n\n"
-    for i, (tg_id, pid, dt) in enumerate(rows[:30], 1):
-        text += f"{i}. TG:`{tg_id}` → ID:`{pid}`\n"
+    text = f"📋 **Все участники розыгрыша** — {len(rows)} человек\n\n"
+    current_message = text
+    messages = []
 
-    if len(rows) > 30:
-        text += f"\n...и ещё {len(rows)-30} участников"
+    for i, (tg_id, pid, dt, username, first_name) in enumerate(rows, 1):
+        # Определяем, как отображать пользователя
+        if username:
+            user_display = f"@{username}"
+        elif first_name:
+            user_display = first_name
+        else:
+            user_display = str(tg_id)
+        
+        line = f"{i}. TG: {user_display} → ID: `{pid}`\n"
+        
+        # Если сообщение становится слишком длинным — начинаем новое
+        if len(current_message) + len(line) > 3800:
+            messages.append(current_message)
+            current_message = f"📋 **Продолжение списка** ({i}/{len(rows)})\n\n"
+        
+        current_message += line
 
-    await callback.message.edit_text(text, parse_mode="Markdown")
-    await callback.answer()
+    # Добавляем последнее сообщение в список
+    if current_message.strip():
+        messages.append(current_message)
+
+    # Отправляем первое сообщение (редактируем текущее)
+    await callback.message.edit_text(messages[0], parse_mode="Markdown")
+    
+    # Отправляем остальные сообщения, если список большой
+    for msg in messages[1:]:
+        await asyncio.sleep(0.3)  # небольшая пауза, чтобы Telegram не ругался
+        await callback.message.answer(msg, parse_mode="Markdown")
+
+    await callback.answer(f"✅ Показано {len(rows)} участников")
 
 # ==================== АДМИН МЕНЮ ====================
 @router.message(F.text.in_({"/admin", "/menu", "/help", "/", "/start"}))
@@ -384,6 +417,65 @@ async def admin_menu(message: types.Message):
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_cancel")]
     ])
     await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
+    # ===================== ТЕСТОВЫЕ КОМАНДЫ ДЛЯ РОЗЫГРЫША =====================
+
+@router.message(F.text == "/addtest")
+async def add_test_participants(message: types.Message):
+    """Добавляет 75 тестовых участников для проверки списка"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Доступ только администратору.")
+        return
+    
+    count = 75
+    added = 0
+    
+    for i in range(count):
+        tg_id = 100000000 + i          # тестовые Telegram ID
+        pid = f"1083{i:05d}"           # игровые ID (много начинаются на 1083)
+        dt = f"2026-04-27T12:{i//60:02d}:{i%60:02d}"
+        
+        try:
+            cur.execute(
+                "INSERT OR IGNORE INTO giveaway_participants "
+                "(telegram_user_id, participant_id, entered_at) "
+                "VALUES (?, ?, ?)",
+                (tg_id, pid, dt)
+            )
+            added += 1
+        except Exception as e:
+            logger.error(f"Ошибка добавления тестового участника: {e}")
+    
+    conn.commit()
+    
+    await message.answer(
+        f"✅ **Успешно добавлено {added} тестовых участников**\n\n"
+        f"Теперь можешь проверить список:\n"
+        f"→ /admin → кнопка «Показать участников»"
+    )
+
+
+@router.message(F.text == "/cleartest")
+async def clear_test_participants(message: types.Message):
+    """Полностью очищает таблицу участников розыгрыша"""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("❌ Доступ только администратору.")
+        return
+    
+    cur.execute("DELETE FROM giveaway_participants")
+    conn.commit()
+    
+    await message.answer("🗑️ **Таблица участников розыгрыша полностью очищена.**")
+
+
+@router.message(F.text == "/count")
+async def count_participants(message: types.Message):
+    """Показывает количество участников"""
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    cur.execute("SELECT COUNT(*) FROM giveaway_participants")
+    count = cur.fetchone()[0]
+    await message.answer(f"📊 Всего участников в розыгрыше: **{count}**")
 
 # ==================== УНИВЕРСАЛЬНЫЙ ОБРАБОТЧИК ====================
 @router.callback_query()
