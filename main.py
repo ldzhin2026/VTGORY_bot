@@ -462,21 +462,33 @@ async def admin_menu(message: types.Message):
     await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
     # ===================== ТЕСТОВЫЕ КОМАНДЫ ДЛЯ РОЗЫГРЫША =====================
 
+# ===================== ТЕСТОВЫЕ КОМАНДЫ =====================
+
 @router.message(F.text == "/addtest")
 async def add_test_participants(message: types.Message):
-    """Добавляет 75 тестовых участников для проверки списка"""
     if message.from_user.id != ADMIN_ID:
         await message.answer("❌ Доступ только администратору.")
         return
-    
+
     count = 75
     added = 0
-    
+
     for i in range(count):
-        tg_id = 100000000 + i          # тестовые Telegram ID
-        pid = f"1083{i:05d}"           # игровые ID (много начинаются на 1083)
-        dt = f"2026-04-27T12:{i//60:02d}:{i%60:02d}"
+        tg_id = 100000000 + i
         
+        # === НОВАЯ ЛОГИКА ТЕСТОВЫХ ID ===
+        if i < 25:
+            # 25 обычных участников (ниже приоритета)
+            pid = f"1079{i:05d}"           # например: 107900123
+        elif i < 55:
+            # 30 приоритетных участников (10830000 и выше)
+            pid = f"1083{i:05d}"           # например: 108300025
+        else:
+            # 20 высоких ID (ещё больше)
+            pid = f"109{i:06d}"            # например: 109000045
+
+        dt = f"2026-04-27T12:{i//60:02d}:{i%60:02d}"
+
         try:
             cur.execute(
                 "INSERT OR IGNORE INTO giveaway_participants "
@@ -485,17 +497,19 @@ async def add_test_participants(message: types.Message):
                 (tg_id, pid, dt)
             )
             added += 1
-        except Exception as e:
-            logger.error(f"Ошибка добавления тестового участника: {e}")
-    
+        except:
+            pass
+
     conn.commit()
     
     await message.answer(
-        f"✅ **Успешно добавлено {added} тестовых участников**\n\n"
-        f"Теперь можешь проверить список:\n"
-        f"→ /admin → кнопка «Показать участников»"
+        f"✅ Добавлено **{added}** тестовых участников\n\n"
+        f"Состав:\n"
+        f"• 25 обычных (ID < 10830000)\n"
+        f"• 30 приоритетных (1083xxxx)\n"
+        f"• 20 высоких (109xxxx)\n\n"
+        f"Теперь можешь завершить розыгрыш и проверить логику."
     )
-
 
 @router.message(F.text == "/cleartest")
 async def clear_test_participants(message: types.Message):
