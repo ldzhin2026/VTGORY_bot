@@ -323,31 +323,29 @@ async def process_winners_count(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    # ==================== УЛУЧШЕННАЯ ЛОГИКА ПРИОРИТЕТА ====================
-    # Приоритетные: 1084xxxx и выше + все 109xxxx
+    # ==================== ФИНАЛЬНАЯ ЛОГИКА ====================
     pref_ids = []
     normal_ids = []
-    
+
     for pid in all_ids:
         if not pid.isdigit():
             normal_ids.append(pid)
             continue
-            
         num = int(pid)
-        if num >= 10840000:          # ← Главное изменение!
+        if num >= 10830000:        # ← Основной порог
             pref_ids.append(pid)
         else:
             normal_ids.append(pid)
 
     winners = []
-    target_pref = max(1, round(count * 0.8))   # 80%
+    target_pref = max(1, round(count * 0.8))  # 80%
 
-    # 1. Берём приоритетных
+    # 1. Приоритетные
     if pref_ids:
         take = min(target_pref, len(pref_ids))
         winners.extend(random.sample(pref_ids, k=take))
 
-    # 2. Добираем обычных
+    # 2. Обычные
     remaining = count - len(winners)
     if remaining > 0 and normal_ids:
         take = min(remaining, len(normal_ids))
@@ -356,14 +354,14 @@ async def process_winners_count(message: types.Message, state: FSMContext):
     # 3. Страховка
     if len(winners) < count:
         needed = count - len(winners)
-        remaining_pool = [p for p in all_ids if p not in winners]
+        remaining_pool = [p for p in all_ids if p not in set(winners)]
         if remaining_pool:
             winners.extend(random.sample(remaining_pool, k=min(needed, len(remaining_pool))))
 
     winners = list(dict.fromkeys(winners))[:count]
 
-    # Статистика
-    pref_won = sum(1 for w in winners if int(w) >= 10840000)
+    # Правильный подсчёт приоритетных
+    pref_won = sum(1 for w in winners if int(w) >= 10830000)
 
     text = (
         f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
@@ -376,7 +374,6 @@ async def process_winners_count(message: types.Message, state: FSMContext):
 
     await message.reply(text, parse_mode="Markdown")
 
-    # Очистка
     cur.execute("DELETE FROM giveaway_participants")
     conn.commit()
     giveaway_active = False
