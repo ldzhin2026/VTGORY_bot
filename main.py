@@ -305,8 +305,8 @@ async def process_giveaway_id(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin_giveaway_menu")
 async def admin_giveaway_menu(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("Доступ только у владельца", show_alert=True)
+    if callback.from_user.id not in MODERATORS_IDS:
+        await callback.answer("Нет доступа", show_alert=True)
         return
     global giveaway_active
     status = "🟢 АКТИВЕН" if giveaway_active else "🔴 НЕ АКТИВЕН"
@@ -347,7 +347,7 @@ async def giveaway_end(callback: types.CallbackQuery, state: FSMContext):
 async def process_winners_count(message: types.Message, state: FSMContext):
     global giveaway_active
 
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id not in MODERATORS_IDS:   # ← Изменённая строка
         await state.clear()
         return
 
