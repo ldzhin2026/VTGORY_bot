@@ -300,7 +300,7 @@ async def giveaway_end(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(GiveawayStates.waiting_for_winners_count)
 async def process_winners_count(message: types.Message, state: FSMContext):
-    global giveaway_active  # ← Теперь в самом начале!
+    global giveaway_active
 
     if message.from_user.id != ADMIN_ID:
         await state.clear()
@@ -314,7 +314,6 @@ async def process_winners_count(message: types.Message, state: FSMContext):
         await message.reply("❌ Введи положительное целое число")
         return
 
-    # Получаем всех участников
     cur.execute("SELECT participant_id FROM giveaway_participants")
     all_ids = [row[0] for row in cur.fetchall()]
 
@@ -324,21 +323,31 @@ async def process_winners_count(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    # ==================== ИСПРАВЛЕННАЯ ЛОГИКА ПРИОРИТЕТА ====================
-    pref_ids = [pid for pid in all_ids 
-                if pid.isdigit() and (pid.startswith("1083") or pid.startswith("109"))]
-
-    normal_ids = [pid for pid in all_ids if pid not in pref_ids]
+    # ==================== УЛУЧШЕННАЯ ЛОГИКА ПРИОРИТЕТА ====================
+    # Приоритетные: 1084xxxx и выше + все 109xxxx
+    pref_ids = []
+    normal_ids = []
+    
+    for pid in all_ids:
+        if not pid.isdigit():
+            normal_ids.append(pid)
+            continue
+            
+        num = int(pid)
+        if num >= 10840000:          # ← Главное изменение!
+            pref_ids.append(pid)
+        else:
+            normal_ids.append(pid)
 
     winners = []
-    target_pref = max(1, round(count * 0.8))  # 80%
+    target_pref = max(1, round(count * 0.8))   # 80%
 
-    # 1. Приоритетные
+    # 1. Берём приоритетных
     if pref_ids:
         take = min(target_pref, len(pref_ids))
         winners.extend(random.sample(pref_ids, k=take))
 
-    # 2. Обычные
+    # 2. Добираем обычных
     remaining = count - len(winners)
     if remaining > 0 and normal_ids:
         take = min(remaining, len(normal_ids))
@@ -354,7 +363,7 @@ async def process_winners_count(message: types.Message, state: FSMContext):
     winners = list(dict.fromkeys(winners))[:count]
 
     # Статистика
-    pref_won = sum(1 for w in winners if w.startswith("1083") or w.startswith("109"))
+    pref_won = sum(1 for w in winners if int(w) >= 10840000)
 
     text = (
         f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
