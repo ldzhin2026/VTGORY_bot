@@ -300,6 +300,8 @@ async def giveaway_end(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(GiveawayStates.waiting_for_winners_count)
 async def process_winners_count(message: types.Message, state: FSMContext):
+    global giveaway_active  # ← Теперь в самом начале!
+
     if message.from_user.id != ADMIN_ID:
         await state.clear()
         return
@@ -318,13 +320,11 @@ async def process_winners_count(message: types.Message, state: FSMContext):
 
     if not all_ids:
         await message.reply("Нет участников.")
-        global giveaway_active
         giveaway_active = False
         await state.clear()
         return
 
     # ==================== ИСПРАВЛЕННАЯ ЛОГИКА ПРИОРИТЕТА ====================
-    # Приоритетные ID — начинаются на 1083 или 109
     pref_ids = [pid for pid in all_ids 
                 if pid.isdigit() and (pid.startswith("1083") or pid.startswith("109"))]
 
@@ -333,30 +333,29 @@ async def process_winners_count(message: types.Message, state: FSMContext):
     winners = []
     target_pref = max(1, round(count * 0.8))  # 80%
 
-    # 1. Берём 80% из приоритетных
+    # 1. Приоритетные
     if pref_ids:
         take = min(target_pref, len(pref_ids))
         winners.extend(random.sample(pref_ids, k=take))
 
-    # 2. Добираем остаток из обычных
+    # 2. Обычные
     remaining = count - len(winners)
     if remaining > 0 and normal_ids:
         take = min(remaining, len(normal_ids))
         winners.extend(random.sample(normal_ids, k=take))
 
-    # 3. Страховка, если вдруг не хватило участников
+    # 3. Страховка
     if len(winners) < count:
         needed = count - len(winners)
         remaining_pool = [p for p in all_ids if p not in winners]
         if remaining_pool:
             winners.extend(random.sample(remaining_pool, k=min(needed, len(remaining_pool))))
 
-    winners = list(dict.fromkeys(winners))[:count]  # убираем возможные дубли
+    winners = list(dict.fromkeys(winners))[:count]
 
     # Статистика
     pref_won = sum(1 for w in winners if w.startswith("1083") or w.startswith("109"))
 
-    # Вывод результата
     text = (
         f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
         f"Выбрано: **{len(winners)}** из {len(all_ids)} участников\n"
@@ -368,10 +367,9 @@ async def process_winners_count(message: types.Message, state: FSMContext):
 
     await message.reply(text, parse_mode="Markdown")
 
-    # Очистка после розыгрыша
+    # Очистка
     cur.execute("DELETE FROM giveaway_participants")
     conn.commit()
-    global giveaway_active
     giveaway_active = False
     await state.clear()
     return
