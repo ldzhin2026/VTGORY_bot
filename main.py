@@ -193,34 +193,45 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
 async def giveaway_command(message: types.Message, state: FSMContext):
     global giveaway_active
 
-    # Проверка — прошёл ли капчу
+    # Проверка: прошёл ли капчу
     cur.execute("SELECT user_id FROM users WHERE user_id = ?", (message.from_user.id,))
     if not cur.fetchone():
-        await message.answer(
-            "❌ Вы ещё не прошли проверку.\n\n"
-            "Напишите /start и пройдите капчу, чтобы участвовать в розыгрыше."
-        )
+        await message.answer("❌ Вы ещё не прошли проверку.\n\nНапишите /start")
         return
 
-    # Проверка — активен ли розыгрыш
     if not giveaway_active:
         await message.answer("❌ Сейчас розыгрыши не проводятся.")
         return
 
-    # Проверка — уже участвует?
+    # Проверка: уже участвует?
     cur.execute("SELECT participant_id FROM giveaway_participants WHERE telegram_user_id = ?", 
                 (message.from_user.id,))
     if cur.fetchone():
         await message.answer("⚠️ Вы уже участвуете в текущем розыгрыше!")
         return
 
-    await message.answer(
-        "🎟️ **Участие в розыгрыше**\n\n"
-        "Отправь мне **ID** твоего игрового кабинета Dragon Money\n"
-        "(только цифры, без пробелов)",
-        parse_mode="Markdown"
+    # Красивое сообщение как после капчи
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎁 ТЕЛЕГРАМ КАНАЛ", url=CHANNEL_LINK)],
+        [InlineKeyboardButton(text="💬 НАШ ЧАТ", url=CHAT_LINK)],
+        [InlineKeyboardButton(text="🎰 DRAGON MONEY", url="https://vtgori.pro/dragon")],
+        [InlineKeyboardButton(text="🎟️ РОЗЫГРЫШ", callback_data="start_giveaway")],
+        [InlineKeyboardButton(text="🛠️ МОДЕРАТОР", url="https://t.me/ModTolkogori")],
+        [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")]
+    ])
+
+    text = (
+        "✅ **Пройдено!**\n\n"
+        "Для участия в розыгрыше необходимо сделать следующее:\n\n"
+        "✈️ 1. Подписаться на ТЕЛЕГРАМ КАНАЛ и ЧАТ\n\n"
+        f"✍️ 2. Зарегистрироваться по ссылке ниже в Dragon Money "
+        f"(<a href='http://vtgori.pro/guide/'>инструкция здесь</a>)\n\n"
+        "🎁 3. Нажать на кнопку «РОЗЫГРЫШ» ниже и вставить ID аккаунта от Dragon Money\n\n"
+        "🏆 4. Если ты выиграл в розыгрыше, тогда получишь 1000 руб. с возможностью вывода денег.\n\n"
+        "☝️ Начисление возможно только нашему рефералу (тому кто зарегистрировался по нашей ссылке)"
     )
-    await state.set_state(GiveawayStates.waiting_for_id)
+
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 # ==================== РОЗЫГРЫШ ====================
 
