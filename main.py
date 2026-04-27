@@ -322,6 +322,53 @@ async def process_winners_count(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
+    # === СТРОГАЯ ЛОГИКА 80/20 ===
+    pref_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) >= 10830000]
+    normal_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) < 10830000]
+
+    winners = []
+    num_pref = max(1, round(count * 0.8))        # 80%
+
+    # 1. Берём максимально возможное количество из приоритетных
+    if pref_ids:
+        take_pref = min(num_pref, len(pref_ids))
+        winners.extend(random.sample(pref_ids, k=take_pref))
+
+    # 2. Добираем остаток строго из обычных
+    remaining = count - len(winners)
+    if remaining > 0 and normal_ids:
+        take_normal = min(remaining, len(normal_ids))
+        winners.extend(random.sample(normal_ids, k=take_normal))
+
+    # 3. Если всё равно не хватило (крайний случай) — добираем из всех
+    if len(winners) < count:
+        needed = count - len(winners)
+        remaining_pool = [p for p in all_ids if p not in winners]
+        if remaining_pool:
+            winners.extend(random.sample(remaining_pool, k=min(needed, len(remaining_pool))))
+
+    winners = list(dict.fromkeys(winners))[:count]
+
+    # Подсчёт для отчёта
+    pref_won = sum(1 for w in winners if int(w) >= 10830000)
+
+    # Вывод
+    text = f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
+    text += f"Выбрано: **{len(winners)}** из {len(all_ids)} участников\n"
+    text += f"Приоритетных: **{pref_won}** из {len(pref_ids)} (80% = {num_pref})\n\n"
+    text += f"🏆 **Победители:**\n"
+
+    for i, w in enumerate(winners, 1):
+        text += f"{i}. `{w}`\n"
+
+    await message.reply(text, parse_mode="Markdown")
+
+    cur.execute("DELETE FROM giveaway_participants")
+    conn.commit()
+    giveaway_active = False
+    await state.clear()
+    return
+
     # === ИСПРАВЛЕННАЯ ЛОГИКА ПРИОРИТЕТА ===
     pref_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) >= 10830000]
     normal_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) < 10830000]
