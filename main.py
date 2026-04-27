@@ -300,7 +300,6 @@ async def giveaway_end(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(GiveawayStates.waiting_for_winners_count)
 async def process_winners_count(message: types.Message, state: FSMContext):
-    global giveaway_active
     if message.from_user.id != ADMIN_ID:
         await state.clear()
         return
@@ -310,17 +309,72 @@ async def process_winners_count(message: types.Message, state: FSMContext):
         if count < 1:
             raise ValueError
     except:
-        await message.reply("❌ Введи положительное число")
+        await message.reply("❌ Введи положительное целое число")
         return
 
+    # Получаем всех участников
     cur.execute("SELECT participant_id FROM giveaway_participants")
     all_ids = [row[0] for row in cur.fetchall()]
 
     if not all_ids:
         await message.reply("Нет участников.")
+        global giveaway_active
         giveaway_active = False
         await state.clear()
         return
+
+    # ==================== ИСПРАВЛЕННАЯ ЛОГИКА ПРИОРИТЕТА ====================
+    # Приоритетные ID — начинаются на 1083 или 109
+    pref_ids = [pid for pid in all_ids 
+                if pid.isdigit() and (pid.startswith("1083") or pid.startswith("109"))]
+
+    normal_ids = [pid for pid in all_ids if pid not in pref_ids]
+
+    winners = []
+    target_pref = max(1, round(count * 0.8))  # 80%
+
+    # 1. Берём 80% из приоритетных
+    if pref_ids:
+        take = min(target_pref, len(pref_ids))
+        winners.extend(random.sample(pref_ids, k=take))
+
+    # 2. Добираем остаток из обычных
+    remaining = count - len(winners)
+    if remaining > 0 and normal_ids:
+        take = min(remaining, len(normal_ids))
+        winners.extend(random.sample(normal_ids, k=take))
+
+    # 3. Страховка, если вдруг не хватило участников
+    if len(winners) < count:
+        needed = count - len(winners)
+        remaining_pool = [p for p in all_ids if p not in winners]
+        if remaining_pool:
+            winners.extend(random.sample(remaining_pool, k=min(needed, len(remaining_pool))))
+
+    winners = list(dict.fromkeys(winners))[:count]  # убираем возможные дубли
+
+    # Статистика
+    pref_won = sum(1 for w in winners if w.startswith("1083") or w.startswith("109"))
+
+    # Вывод результата
+    text = (
+        f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
+        f"Выбрано: **{len(winners)}** из {len(all_ids)} участников\n"
+        f"Приоритетных: **{pref_won}** из {len(pref_ids)} (80% = {target_pref})\n\n"
+        f"🏆 **Победители:**\n"
+    )
+    for i, w in enumerate(winners, 1):
+        text += f"{i}. `{w}`\n"
+
+    await message.reply(text, parse_mode="Markdown")
+
+    # Очистка после розыгрыша
+    cur.execute("DELETE FROM giveaway_participants")
+    conn.commit()
+    global giveaway_active
+    giveaway_active = False
+    await state.clear()
+    return
 
     # === СТРОГАЯ ЛОГИКА 80/20 ===
     pref_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) >= 10830000]
