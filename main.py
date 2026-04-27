@@ -390,7 +390,6 @@ async def process_winners_count(message: types.Message, state: FSMContext):
     text = (
         f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
         f"Выбрано: **{len(winners)}** из {len(all_ids)} участников\n"
-        f"Приоритетных: **{pref_won}** из {len(pref_ids)} (80% = {target_pref})\n\n"
         f"🏆 **Победители:**\n"
     )
     for i, w in enumerate(winners, 1):
