@@ -187,6 +187,40 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             await callback.message.reply("❌ Попытки кончились. /start")
             await state.clear()
             await callback.answer("Исчерпано", show_alert=True)
+            # ==================== НОВАЯ КОМАНДА ДЛЯ РОЗЫГРЫША ====================
+@router.message(Command("giveaway"))
+@router.message(F.text.lower().in_({"розыгрыш", "розыгрышь", "giveaway", "участие"}))
+async def giveaway_command(message: types.Message, state: FSMContext):
+    global giveaway_active
+
+    # Проверка — прошёл ли капчу
+    cur.execute("SELECT user_id FROM users WHERE user_id = ?", (message.from_user.id,))
+    if not cur.fetchone():
+        await message.answer(
+            "❌ Вы ещё не прошли проверку.\n\n"
+            "Напишите /start и пройдите капчу, чтобы участвовать в розыгрыше."
+        )
+        return
+
+    # Проверка — активен ли розыгрыш
+    if not giveaway_active:
+        await message.answer("❌ Сейчас розыгрыши не проводятся.")
+        return
+
+    # Проверка — уже участвует?
+    cur.execute("SELECT participant_id FROM giveaway_participants WHERE telegram_user_id = ?", 
+                (message.from_user.id,))
+    if cur.fetchone():
+        await message.answer("⚠️ Вы уже участвуете в текущем розыгрыше!")
+        return
+
+    await message.answer(
+        "🎟️ **Участие в розыгрыше**\n\n"
+        "Отправь мне **ID** твоего игрового кабинета Dragon Money\n"
+        "(только цифры, без пробелов)",
+        parse_mode="Markdown"
+    )
+    await state.set_state(GiveawayStates.waiting_for_id)
 
 # ==================== РОЗЫГРЫШ ====================
 
