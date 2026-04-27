@@ -323,29 +323,19 @@ async def process_winners_count(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
-    # ==================== ФИНАЛЬНАЯ ЛОГИКА ====================
-    pref_ids = []
-    normal_ids = []
-
-    for pid in all_ids:
-        if not pid.isdigit():
-            normal_ids.append(pid)
-            continue
-        num = int(pid)
-        if num >= 10830000:        # ← Основной порог
-            pref_ids.append(pid)
-        else:
-            normal_ids.append(pid)
+    # ==================== ПРАВИЛЬНАЯ ЛОГИКА ====================
+    pref_ids = [pid for pid in all_ids if pid.startswith(("1083", "109"))]
+    normal_ids = [pid for pid in all_ids if pid not in pref_ids]
 
     winners = []
-    target_pref = max(1, round(count * 0.8))  # 80%
+    target_pref = max(1, round(count * 0.8))  # 16 из 20
 
-    # 1. Приоритетные
+    # 1. Приоритетные (80%)
     if pref_ids:
         take = min(target_pref, len(pref_ids))
         winners.extend(random.sample(pref_ids, k=take))
 
-    # 2. Обычные
+    # 2. Обычные (20%)
     remaining = count - len(winners)
     if remaining > 0 and normal_ids:
         take = min(remaining, len(normal_ids))
@@ -354,14 +344,14 @@ async def process_winners_count(message: types.Message, state: FSMContext):
     # 3. Страховка
     if len(winners) < count:
         needed = count - len(winners)
-        remaining_pool = [p for p in all_ids if p not in set(winners)]
+        remaining_pool = [p for p in all_ids if p not in winners]
         if remaining_pool:
             winners.extend(random.sample(remaining_pool, k=min(needed, len(remaining_pool))))
 
     winners = list(dict.fromkeys(winners))[:count]
 
-    # Правильный подсчёт приоритетных
-    pref_won = sum(1 for w in winners if int(w) >= 10830000)
+    # Подсчёт приоритетных для статистики
+    pref_won = sum(1 for w in winners if w.startswith(("1083", "109")))
 
     text = (
         f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
@@ -374,6 +364,7 @@ async def process_winners_count(message: types.Message, state: FSMContext):
 
     await message.reply(text, parse_mode="Markdown")
 
+    # Очистка
     cur.execute("DELETE FROM giveaway_participants")
     conn.commit()
     giveaway_active = False
