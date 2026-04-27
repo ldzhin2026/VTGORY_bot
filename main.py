@@ -322,6 +322,52 @@ async def process_winners_count(message: types.Message, state: FSMContext):
         await state.clear()
         return
 
+    # === ИСПРАВЛЕННАЯ ЛОГИКА ПРИОРИТЕТА ===
+    pref_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) >= 10830000]
+    normal_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) < 10830000]
+
+    winners = []
+    num_pref = max(1, round(count * 0.8))   # 80%
+
+    # 1. Берем из приоритетных
+    if pref_ids:
+        sample_size = min(num_pref, len(pref_ids))
+        winners.extend(random.sample(pref_ids, k=sample_size))
+
+    # 2. Добираем остаток из обычных
+    remaining = count - len(winners)
+    if remaining > 0 and normal_ids:
+        sample_size = min(remaining, len(normal_ids))
+        winners.extend(random.sample(normal_ids, k=sample_size))
+
+    # 3. Финальная страховка (если вдруг не хватило)
+    if len(winners) < count:
+        needed = count - len(winners)
+        remaining_pool = [pid for pid in all_ids if pid not in winners]
+        if remaining_pool:
+            winners.extend(random.sample(remaining_pool, k=min(needed, len(remaining_pool))))
+
+    winners = list(dict.fromkeys(winners))[:count]
+
+    # Вывод результата
+    pref_won = sum(1 for w in winners if int(w) >= 10830000)
+    
+    text = f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
+    text += f"Выбрано: **{len(winners)}** из {len(all_ids)} участников\n"
+    text += f"Приоритетных победителей: **{pref_won}** из {len(pref_ids)}\n\n"
+    text += f"🏆 **Победители:**\n"
+
+    for i, w in enumerate(winners, 1):
+        text += f"{i}. `{w}`\n"
+
+    await message.reply(text, parse_mode="Markdown")
+
+    cur.execute("DELETE FROM giveaway_participants")
+    conn.commit()
+    giveaway_active = False
+    await state.clear()
+    return
+
     # === ИСПРАВЛЕННАЯ ЛОГИКА ===
     pref_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) >= 10830000]
     normal_ids = [pid for pid in all_ids if pid not in set(pref_ids)]  # set для скорости
