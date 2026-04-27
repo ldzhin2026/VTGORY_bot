@@ -5,7 +5,7 @@ import sqlite3
 import os
 from datetime import datetime
 from aiogram import Bot, Dispatcher, Router, types, F
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command   # ← Добавили Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
