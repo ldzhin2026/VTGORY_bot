@@ -23,7 +23,7 @@ def parse_int_list(raw: str) -> list[int]:
     return values
 
 
-TOKEN = os.getenv("BOT_TOKEN", "8656659502:AAEr1hajHfDs0y-iqjoAWG6qT0Hw7P4IYpI").strip()
+TOKEN = "8656659502:AAEr1hajHfDs0y-iqjoAWG6qT0Hw7P4IYpI"
 
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/tolkogori")
 CHAT_LINK = os.getenv("CHAT_LINK", "https://t.me/tolkogori_chat")
