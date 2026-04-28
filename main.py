@@ -14,15 +14,36 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # ────────────────────────────────────────────────
 # Настройки
 # ────────────────────────────────────────────────
-TOKEN = "8656659502:AAEr1hajHfDs0y-iqjoAWG6qT0Hw7P4IYpI"
-CHANNEL_LINK = "https://t.me/tolkogori"
-CHAT_LINK = "https://t.me/tolkogori_chat"
-PHOTO_PATH = "welcome_photo.jpg"
-ADMIN_ID = 7051676412
-MODERATORS_IDS = [ADMIN_ID, 1483123969]
+def parse_int_list(raw: str) -> list[int]:
+    values = []
+    for token in raw.replace(";", ",").split(","):
+        token = token.strip()
+        if token:
+            values.append(int(token))
+    return values
 
-DB_PATH = "/app/data/subscribers.db"
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+TOKEN = os.getenv("BOT_TOKEN", "").strip()
+if not TOKEN:
+    raise RuntimeError("Missing BOT_TOKEN environment variable")
+
+CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/tolkogori")
+CHAT_LINK = os.getenv("CHAT_LINK", "https://t.me/tolkogori_chat")
+PHOTO_PATH = os.getenv("PHOTO_PATH", "welcome_photo.jpg")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "7051676412"))
+
+raw_moderators = os.getenv("MODERATORS_IDS", "")
+if raw_moderators:
+    MODERATORS_IDS = parse_int_list(raw_moderators)
+    if ADMIN_ID not in MODERATORS_IDS:
+        MODERATORS_IDS.append(ADMIN_ID)
+else:
+    MODERATORS_IDS = [ADMIN_ID, 1483123969, 996400017]
+
+DB_PATH = os.getenv("DB_PATH", "/app/data/subscribers.db")
+db_dir = os.path.dirname(DB_PATH)
+if db_dir:
+    os.makedirs(db_dir, exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,29 +55,7 @@ logger = logging.getLogger(__name__)
 conn = sqlite3.connect(DB_PATH, timeout=10)
 cur = conn.cursor()
 
-# Таблица пользователей (остаётся без изменений)
-cur.execute('''CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    username TEXT,
-    first_name TEXT,
-    joined_at TEXT,
-    attempts_used INTEGER DEFAULT 0
-)''')
-
-# === РОЗЫГРЫШ: пересоздаём таблицу с новой структурой ===
-cur.execute("DROP TABLE IF EXISTS giveaway_participants")  # удаляем старую
-
-cur.execute('''CREATE TABLE giveaway_participants (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    telegram_user_id INTEGER NOT NULL UNIQUE,   -- один TG-пользователь = один ID
-    participant_id TEXT NOT NULL,
-    entered_at TEXT
-)''')
-
-conn.commit()
-print("✅ Таблица giveaway_participants пересоздана с новой структурой")
-
-# Таблица розыгрыша
+# Таблица пользователей
 cur.execute('''CREATE TABLE IF NOT EXISTS users (
     user_id INTEGER PRIMARY KEY,
     username TEXT,
@@ -113,6 +112,17 @@ def save_user(user: types.User, attempts_used: int):
                    VALUES (?, ?, ?, ?, ?)''',
                 (user.id, username, user.first_name, now, attempts_used))
     conn.commit()
+
+
+def get_winners_chat_id() -> str | None:
+    configured = os.getenv("WINNERS_CHANNEL_ID", "").strip()
+    if configured:
+        return configured
+    if "t.me/" in CHANNEL_LINK:
+        slug = CHANNEL_LINK.rstrip("/").split("/")[-1].strip()
+        if slug:
+            return f"@{slug}"
+    return None
 
 # ==================== ХЕНДЛЕРЫ ====================
 
@@ -335,6 +345,9 @@ async def giveaway_start(callback: types.CallbackQuery):
 @router.callback_query(F.data == "giveaway_end")
 async def giveaway_end(callback: types.CallbackQuery, state: FSMContext):
     global giveaway_active
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Только владелец может завершить розыгрыш", show_alert=True)
+        return
     if not giveaway_active:
         await callback.answer("Розыгрыш не активен", show_alert=True)
         return
@@ -347,7 +360,8 @@ async def giveaway_end(callback: types.CallbackQuery, state: FSMContext):
 async def process_winners_count(message: types.Message, state: FSMContext):
     global giveaway_active
 
-    if message.from_user.id not in MODERATORS_IDS:   # ← Изменённая строка
+    if message.from_user.id != ADMIN_ID:
+        await message.reply("❌ Только владелец может задавать количество победителей.")
         await state.clear()
         return
 
@@ -359,330 +373,50 @@ async def process_winners_count(message: types.Message, state: FSMContext):
         await message.reply("❌ Введи положительное целое число")
         return
 
-    cur.execute("SELECT participant_id FROM giveaway_participants")
-    all_ids = [row[0] for row in cur.fetchall()]
+    cur.execute("SELECT telegram_user_id, participant_id FROM giveaway_participants")
+    participants = cur.fetchall()
 
-    if not all_ids:
+    if not participants:
         await message.reply("Нет участников.")
         giveaway_active = False
         await state.clear()
         return
 
-    # ==================== ПРАВИЛЬНАЯ ЛОГИКА ====================
-    pref_ids = [pid for pid in all_ids if pid.startswith(("1083", "109"))]
-    normal_ids = [pid for pid in all_ids if pid not in pref_ids]
-
-    winners = []
-    target_pref = max(1, round(count * 0.8))  # 16 из 20
-
-    # 1. Приоритетные (80%)
-    if pref_ids:
-        take = min(target_pref, len(pref_ids))
-        winners.extend(random.sample(pref_ids, k=take))
-
-    # 2. Обычные (20%)
-    remaining = count - len(winners)
-    if remaining > 0 and normal_ids:
-        take = min(remaining, len(normal_ids))
-        winners.extend(random.sample(normal_ids, k=take))
-
-    # 3. Страховка
-    if len(winners) < count:
-        needed = count - len(winners)
-        remaining_pool = [p for p in all_ids if p not in winners]
-        if remaining_pool:
-            winners.extend(random.sample(remaining_pool, k=min(needed, len(remaining_pool))))
-
-    winners = list(dict.fromkeys(winners))[:count]
-
-    # Подсчёт приоритетных для статистики
-    pref_won = sum(1 for w in winners if w.startswith(("1083", "109")))
+    winners = random.sample(participants, k=min(count, len(participants)))
+    winner_ids = [pid for _, pid in winners]
 
     text = (
         f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
-        f"Выбрано: **{len(winners)}** из {len(all_ids)} участников\n"
+        f"Выбрано: **{len(winner_ids)}** из {len(participants)} участников\n"
         f"🏆 **Победители:**\n"
     )
-    for i, w in enumerate(winners, 1):
-        text += f"{i}. `{w}`\n"
+    for i, pid in enumerate(winner_ids, 1):
+        text += f"{i}. `{pid}`\n"
 
     await message.reply(text, parse_mode="Markdown")
 
-    # Очистка
-    cur.execute("DELETE FROM giveaway_participants")
-    conn.commit()
-    giveaway_active = False
-    await state.clear()
-    return
+    winners_chat_id = get_winners_chat_id()
+    if winners_chat_id:
+        try:
+            await bot.send_message(chat_id=winners_chat_id, text=text, parse_mode="Markdown")
+        except Exception as e:
+            logger.warning(f"Не удалось опубликовать победителей в канал: {e}")
 
-    # === СТРОГАЯ ЛОГИКА 80/20 ===
-    pref_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) >= 10830000]
-    normal_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) < 10830000]
+    for tg_user_id, pid in winners:
+        try:
+            await bot.send_message(
+                tg_user_id,
+                (
+                    "🎉 Поздравляем! Ты выиграл в розыгрыше.\n\n"
+                    f"Твой ID: `{pid}`\n\n"
+                    "Выигрыш будет отправлен в кабинет Dragon Money "
+                    "только если регистрация была по нашей ссылке."
+                ),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Не удалось отправить ЛС победителю {tg_user_id}: {e}")
 
-    winners = []
-    num_pref = max(1, round(count * 0.8))        # 80%
-
-    # 1. Берём максимально возможное количество из приоритетных
-    if pref_ids:
-        take_pref = min(num_pref, len(pref_ids))
-        winners.extend(random.sample(pref_ids, k=take_pref))
-
-    # 2. Добираем остаток строго из обычных
-    remaining = count - len(winners)
-    if remaining > 0 and normal_ids:
-        take_normal = min(remaining, len(normal_ids))
-        winners.extend(random.sample(normal_ids, k=take_normal))
-
-    # 3. Если всё равно не хватило (крайний случай) — добираем из всех
-    if len(winners) < count:
-        needed = count - len(winners)
-        remaining_pool = [p for p in all_ids if p not in winners]
-        if remaining_pool:
-            winners.extend(random.sample(remaining_pool, k=min(needed, len(remaining_pool))))
-
-    winners = list(dict.fromkeys(winners))[:count]
-
-    # Подсчёт для отчёта
-    pref_won = sum(1 for w in winners if int(w) >= 10830000)
-
-    # Вывод
-    text = f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
-    text += f"Выбрано: **{len(winners)}** из {len(all_ids)} участников\n"
-    text += f"Приоритетных: **{pref_won}** из {len(pref_ids)} (80% = {num_pref})\n\n"
-    text += f"🏆 **Победители:**\n"
-
-    for i, w in enumerate(winners, 1):
-        text += f"{i}. `{w}`\n"
-
-    await message.reply(text, parse_mode="Markdown")
-
-    cur.execute("DELETE FROM giveaway_participants")
-    conn.commit()
-    giveaway_active = False
-    await state.clear()
-    return
-
-    # === ИСПРАВЛЕННАЯ ЛОГИКА ПРИОРИТЕТА ===
-    pref_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) >= 10830000]
-    normal_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) < 10830000]
-
-    winners = []
-    num_pref = max(1, round(count * 0.8))   # 80%
-
-    # 1. Берем из приоритетных
-    if pref_ids:
-        sample_size = min(num_pref, len(pref_ids))
-        winners.extend(random.sample(pref_ids, k=sample_size))
-
-    # 2. Добираем остаток из обычных
-    remaining = count - len(winners)
-    if remaining > 0 and normal_ids:
-        sample_size = min(remaining, len(normal_ids))
-        winners.extend(random.sample(normal_ids, k=sample_size))
-
-    # 3. Финальная страховка (если вдруг не хватило)
-    if len(winners) < count:
-        needed = count - len(winners)
-        remaining_pool = [pid for pid in all_ids if pid not in winners]
-        if remaining_pool:
-            winners.extend(random.sample(remaining_pool, k=min(needed, len(remaining_pool))))
-
-    winners = list(dict.fromkeys(winners))[:count]
-
-    # Вывод результата
-    pref_won = sum(1 for w in winners if int(w) >= 10830000)
-    
-    text = f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
-    text += f"Выбрано: **{len(winners)}** из {len(all_ids)} участников\n"
-    text += f"Приоритетных победителей: **{pref_won}** из {len(pref_ids)}\n\n"
-    text += f"🏆 **Победители:**\n"
-
-    for i, w in enumerate(winners, 1):
-        text += f"{i}. `{w}`\n"
-
-    await message.reply(text, parse_mode="Markdown")
-
-    cur.execute("DELETE FROM giveaway_participants")
-    conn.commit()
-    giveaway_active = False
-    await state.clear()
-    return
-
-    # === ИСПРАВЛЕННАЯ ЛОГИКА ===
-    pref_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) >= 10830000]
-    normal_ids = [pid for pid in all_ids if pid not in set(pref_ids)]  # set для скорости
-
-    winners = []
-    num_pref = max(1, round(count * 0.8))
-
-    # Берем из приоритетных
-    if pref_ids:
-        sample_size = min(num_pref, len(pref_ids))
-        winners.extend(random.sample(pref_ids, k=sample_size))
-
-    # Добираем остаток до нужного количества
-    remaining = count - len(winners)
-    if remaining > 0 and normal_ids:
-        sample_size = min(remaining, len(normal_ids))
-        winners.extend(random.sample(normal_ids, k=sample_size))
-
-    # Финальная защита — если всё равно не хватило
-    if len(winners) < count and all_ids:
-        needed = count - len(winners)
-        remaining_pool = [pid for pid in all_ids if pid not in winners]
-        if remaining_pool:
-            winners.extend(random.sample(remaining_pool, k=min(needed, len(remaining_pool))))
-
-    winners = list(dict.fromkeys(winners))[:count]   # убираем дубли
-
-    # Вывод
-    text = f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
-    text += f"Выбрано: **{len(winners)}** из {len(all_ids)} участников\n\n"
-    text += f"🏆 **Победители:**\n"
-
-    for i, w in enumerate(winners, 1):
-        text += f"{i}. `{w}`\n"
-
-    await message.reply(text, parse_mode="Markdown")
-
-    cur.execute("DELETE FROM giveaway_participants")
-    conn.commit()
-    giveaway_active = False
-    await state.clear()
-    return
-
-    # === ЛОГИКА ПРИОРИТЕТА ===
-    pref_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) >= 10830000]
-    normal_ids = [pid for pid in all_ids if pid not in pref_ids]
-
-    winners = []
-    num_pref = max(1, round(count * 0.8))
-
-    # 80% из приоритетных
-    if pref_ids:
-        sample_size = min(num_pref, len(pref_ids))
-        winners.extend(random.sample(pref_ids, k=sample_size))
-
-    # Остаток из обычных
-    remaining = count - len(winners)
-    if remaining > 0 and normal_ids:
-        sample_size = min(remaining, len(normal_ids))
-        winners.extend(random.sample(normal_ids, k=sample_size))
-
-    winners = list(dict.fromkeys(winners))[:count]
-
-    # Результат
-    text = f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
-    text += f"Выбрано: **{len(winners)}** из {len(all_ids)} участников\n\n"
-    text += f"🏆 **Победители:**\n"
-
-    for i, w in enumerate(winners, 1):
-        text += f"{i}. `{w}`\n"
-
-    await message.reply(text, parse_mode="Markdown")
-
-    # Очистка
-    cur.execute("DELETE FROM giveaway_participants")
-    conn.commit()
-    giveaway_active = False
-    await state.clear()
-    return
-
-    # === ЛОГИКА ПРИОРИТЕТА ===
-    pref_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) >= 10830000]
-    normal_ids = [pid for pid in all_ids if pid not in pref_ids]
-
-    winners = []
-    num_pref = max(1, round(count * 0.8))
-
-    # Берем 80% из приоритетных
-    if pref_ids:
-        sample_size = min(num_pref, len(pref_ids))
-        winners.extend(random.sample(pref_ids, k=sample_size))
-
-    # Добираем остаток из обычных
-    remaining = count - len(winners)
-    if remaining > 0 and normal_ids:
-        sample_size = min(remaining, len(normal_ids))
-        winners.extend(random.sample(normal_ids, k=sample_size))
-
-    winners = list(dict.fromkeys(winners))[:count]
-
-    # Вывод результата
-    text = f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
-    text += f"Выбрано: **{len(winners)}** из {len(all_ids)} участников\n\n"
-    text += f"🏆 **Победители:**\n"
-
-    for i, w in enumerate(winners, 1):
-        text += f"{i}. `{w}`\n"
-
-    await message.reply(text, parse_mode="Markdown")
-
-    # Очистка
-    cur.execute("DELETE FROM giveaway_participants")
-    conn.commit()
-    giveaway_active = False
-    await state.clear()
-    return
-
-    # === НОВАЯ ЛОГИКА ПРИОРИТЕТА ===
-    # Приоритетные — ID >= 10830000
-    pref_ids = [pid for pid in all_ids if pid.isdigit() and int(pid) >= 10830000]
-    normal_ids = [pid for pid in all_ids if pid not in pref_ids]
-
-    winners = []
-    num_pref = max(1, round(count * 0.8))   # 80% из приоритетных
-
-    # Выбираем из приоритетной группы
-    if pref_ids:
-        sample_size = min(num_pref, len(pref_ids))
-        winners.extend(random.sample(pref_ids, k=sample_size))
-
-    # Добираем оставшихся из обычных участников
-    remaining = count - len(winners)
-    if remaining > 0 and normal_ids:
-        sample_size = min(remaining, len(normal_ids))
-        winners.extend(random.sample(normal_ids, k=sample_size))
-
-    # Убираем возможные дубликаты
-    winners = list(dict.fromkeys(winners))[:count]
-
-    # Формируем красивое сообщение
-    text = f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\n"
-    text += f"Выбрано: **{len(winners)}** из {len(all_ids)} участников\n\n"
-    text += f"🏆 **Победители:**\n"
-
-    for i, w in enumerate(winners, 1):
-        text += f"{i}. `{w}`\n"
-
-    await message.reply(text, parse_mode="Markdown")
-
-    # Очищаем участников после розыгрыша
-    cur.execute("DELETE FROM giveaway_participants")
-    conn.commit()
-    giveaway_active = False
-    await state.clear()
-    return
-
-    pref_ids = [pid for pid in all_ids if pid.startswith("1083")]
-    winners = []
-    num_pref = max(1, round(count * 0.8))
-    if pref_ids:
-        winners.extend(random.sample(pref_ids, k=min(num_pref, len(pref_ids))))
-
-    remaining = count - len(winners)
-    if remaining > 0:
-        pool = [pid for pid in all_ids if pid not in winners]
-        if pool:
-            winners.extend(random.sample(pool, k=min(remaining, len(pool))))
-
-    winners = list(dict.fromkeys(winners))[:count]
-
-    text = f"🎉 **РОЗЫГРЫШ ЗАВЕРШЁН**\n\nВыбрано: **{len(winners)}** из {len(all_ids)}\n\n🏆 **Победители:**\n"
-    for i, w in enumerate(winners, 1):
-        text += f"{i}. `{w}`\n"
-
-    await message.reply(text, parse_mode="Markdown")
     cur.execute("DELETE FROM giveaway_participants")
     conn.commit()
     giveaway_active = False
@@ -753,9 +487,6 @@ async def admin_menu(message: types.Message):
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 Рассылка", callback_data="admin_broadcast")],
-        [InlineKeyboardButton(text="📥 Импорт базы", callback_data="admin_importdb")],
-        [InlineKeyboardButton(text="➕ Добавить @usernames", callback_data="admin_addusernames")],
-        [InlineKeyboardButton(text="➕ Добавить одного", callback_data="admin_adduser")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="🎟️ Розыгрыш", callback_data="admin_giveaway_menu")],
         [InlineKeyboardButton(text="📁 Скачать базу", callback_data="admin_getdb")],
@@ -875,7 +606,8 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
         elif data == "audience_all":
             await callback.message.edit_text("Рассылка запущена → всем...")
             await callback.answer()
-            await do_broadcast(callback, state, "all")
+            delivered, failed = await do_broadcast(state)
+            await callback.message.answer(f"✅ Готово. Доставлено: {delivered}, ошибок: {failed}")
             await state.clear()
         elif data == "audience_select":
             await callback.message.edit_text("Пришлите user_id (по строкам, пробелам или запятым)")
@@ -913,7 +645,6 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
     except Exception as e:
         logger.error(f"Ошибка callback {data}: {e}", exc_info=True)
         await callback.message.answer(f"Ошибка: {str(e)}")
-    await callback.answer()
 
 # ==================== ТВОЯ РАССЫЛКА (исходная) ====================
 
@@ -921,7 +652,11 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
 async def process_broadcast_content(message: types.Message, state: FSMContext):
     if message.from_user.id not in MODERATORS_IDS:
         return
-    await state.update_data(broadcast_content=message.model_dump_json(exclude_unset=True))
+    await state.update_data(
+        broadcast_content=message.model_dump_json(exclude_unset=True),
+        source_chat_id=message.chat.id,
+        source_message_id=message.message_id
+    )
     preview_text = message.text or message.caption or "Сообщение без текста"
     preview = f"Предпросмотр рассылки:\n\n{preview_text[:500]}..."
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -932,7 +667,59 @@ async def process_broadcast_content(message: types.Message, state: FSMContext):
     await message.answer(preview + "\n\n(при рассылке будет переслан оригинал)", reply_markup=kb)
     await state.set_state(BroadcastStates.confirm_broadcast)
 
-# (Вставь сюда остальные функции рассылки из твоего исходного кода: ask_audience, broadcast_to_all, process_selective_list, do_broadcast, process_import_db)
+@router.message(BroadcastStates.waiting_for_user_list)
+async def process_selective_list(message: types.Message, state: FSMContext):
+    if message.from_user.id not in MODERATORS_IDS:
+        await state.clear()
+        return
+
+    raw = message.text or ""
+    tokens = raw.replace(",", " ").replace("\n", " ").split()
+    selected_user_ids = []
+    for token in tokens:
+        if token.isdigit():
+            selected_user_ids.append(int(token))
+
+    if not selected_user_ids:
+        await message.answer("❌ Не найдено корректных user_id. Пришли числа через пробел/запятую.")
+        return
+
+    await message.answer(f"Рассылка запущена выборочно ({len(selected_user_ids)} ID)...")
+    delivered, failed = await do_broadcast(state, selected_user_ids)
+    await message.answer(f"✅ Готово. Доставлено: {delivered}, ошибок: {failed}")
+    await state.clear()
+
+
+async def do_broadcast(state: FSMContext, selected_user_ids: list[int] | None = None) -> tuple[int, int]:
+    data = await state.get_data()
+    source_chat_id = data.get("source_chat_id")
+    source_message_id = data.get("source_message_id")
+
+    if not source_chat_id or not source_message_id:
+        return 0, 0
+
+    if selected_user_ids is None:
+        cur.execute("SELECT user_id FROM users")
+        target_ids = [row[0] for row in cur.fetchall()]
+    else:
+        target_ids = list(dict.fromkeys(selected_user_ids))
+
+    delivered = 0
+    failed = 0
+
+    for user_id in target_ids:
+        try:
+            await bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=source_chat_id,
+                message_id=source_message_id
+            )
+            delivered += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.03)
+
+    return delivered, failed
 
 # Запуск
 async def main():
