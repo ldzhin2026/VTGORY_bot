@@ -3,6 +3,7 @@ import random
 import logging
 import sqlite3
 import os
+import json
 from datetime import datetime
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import CommandStart, Command   # ← Добавили Command
@@ -69,6 +70,22 @@ cur.execute('''CREATE TABLE IF NOT EXISTS giveaway_participants (
     participant_id TEXT NOT NULL,
     entered_at TEXT
 )''')
+
+cur.execute('''CREATE TABLE IF NOT EXISTS broadcast_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    text TEXT,
+    media_type TEXT,
+    media_file_id TEXT,
+    buttons_json TEXT,
+    created_by INTEGER,
+    created_at TEXT
+)''')
+
+try:
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_giveaway_participant_id_unique ON giveaway_participants(participant_id)")
+except sqlite3.Error as e:
+    logger.warning(f"Не удалось создать уникальный индекс participant_id: {e}")
 conn.commit()
 
 bot = Bot(token=TOKEN)
@@ -85,10 +102,14 @@ class BroadcastStates(StatesGroup):
     confirm_broadcast = State()
     select_audience = State()
     waiting_for_user_list = State()
+    waiting_for_buttons = State()
+    waiting_for_template_name = State()
+    waiting_for_template_content = State()
 
 class GiveawayStates(StatesGroup):
     waiting_for_id = State()
     waiting_for_winners_count = State()
+    waiting_for_search_query = State()
 
 giveaway_active = False
 
@@ -121,6 +142,101 @@ def get_winners_chat_id() -> str | None:
         if slug:
             return f"@{slug}"
     return None
+
+
+def parse_buttons(raw: str) -> list[dict]:
+    buttons = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if "|" not in line:
+            raise ValueError("Каждая строка должна быть в формате: Текст | https://url")
+        text, url = line.split("|", 1)
+        text = text.strip()
+        url = url.strip()
+        if not text or not url.startswith(("http://", "https://", "tg://")):
+            raise ValueError("Некорректный формат кнопки. Нужен текст и валидный URL.")
+        buttons.append({"text": text[:64], "url": url})
+    return buttons
+
+
+def build_buttons_markup(buttons: list[dict] | None) -> InlineKeyboardMarkup | None:
+    if not buttons:
+        return None
+    rows = [[InlineKeyboardButton(text=b["text"], url=b["url"])] for b in buttons]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def extract_message_payload(message: types.Message) -> dict:
+    payload = {
+        "text": message.text or message.caption or "",
+        "media_type": None,
+        "media_file_id": None
+    }
+    if message.photo:
+        payload["media_type"] = "photo"
+        payload["media_file_id"] = message.photo[-1].file_id
+    elif message.video:
+        payload["media_type"] = "video"
+        payload["media_file_id"] = message.video.file_id
+    elif message.document:
+        payload["media_type"] = "document"
+        payload["media_file_id"] = message.document.file_id
+    return payload
+
+
+def classify_send_error(error: Exception) -> str:
+    msg = str(error).lower()
+    if "bot was blocked" in msg:
+        return "blocked"
+    if "chat not found" in msg:
+        return "chat_not_found"
+    if "user is deactivated" in msg:
+        return "deactivated"
+    if "forbidden" in msg:
+        return "forbidden"
+    return "other"
+
+
+async def render_giveaway_page(message: types.Message, page: int = 0):
+    page_size = 20
+    page = max(page, 0)
+    offset = page * page_size
+    cur.execute("SELECT COUNT(*) FROM giveaway_participants")
+    total = cur.fetchone()[0]
+    if total == 0:
+        await message.edit_text("Пока нет участников.")
+        return
+
+    cur.execute(
+        """
+        SELECT g.telegram_user_id, g.participant_id, g.entered_at, u.username, u.first_name
+        FROM giveaway_participants g
+        LEFT JOIN users u ON g.telegram_user_id = u.user_id
+        ORDER BY g.entered_at DESC
+        LIMIT ? OFFSET ?
+        """,
+        (page_size, offset)
+    )
+    rows = cur.fetchall()
+    max_page = (total + page_size - 1) // page_size
+    text = f"📋 **Участники розыгрыша** — {total}\nСтраница {page + 1}/{max_page}\n\n"
+    for i, (tg_id, pid, _dt, username, first_name) in enumerate(rows, offset + 1):
+        user_display = f"@{username}" if username else (first_name or str(tg_id))
+        text += f"{i}. {user_display} → `{pid}`\n"
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="⬅️ Пред", callback_data=f"admin_giveaway_page_{page-1}"))
+    if page + 1 < max_page:
+        nav.append(InlineKeyboardButton(text="След ➡️", callback_data=f"admin_giveaway_page_{page+1}"))
+    kb = []
+    if nav:
+        kb.append(nav)
+    kb.append([InlineKeyboardButton(text="🔎 Поиск ID", callback_data="admin_giveaway_search")])
+    kb.append([InlineKeyboardButton(text="← Назад", callback_data="admin_giveaway_menu")])
+    await message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 # ==================== ХЕНДЛЕРЫ ====================
 
@@ -289,6 +405,16 @@ async def process_giveaway_id(message: types.Message, state: FSMContext):
             await state.clear()
             return
 
+        # Проверяем, что этот Dragon ID не использует другой Telegram пользователь
+        cur.execute(
+            "SELECT telegram_user_id FROM giveaway_participants WHERE participant_id = ? AND telegram_user_id != ?",
+            (pid, user_id)
+        )
+        if cur.fetchone():
+            await message.reply("❌ Этот ID уже используется другим участником. Укажи другой ID.")
+            await state.clear()
+            return
+
         # Добавляем нового участника
         cur.execute(
             "INSERT INTO giveaway_participants "
@@ -304,6 +430,8 @@ async def process_giveaway_id(message: types.Message, state: FSMContext):
             "Желаем удачи! 🎉"
         )
 
+    except sqlite3.IntegrityError:
+        await message.reply("❌ Этот ID уже участвует в розыгрыше.")
     except Exception as e:
         await message.reply("❌ Ошибка при записи. Попробуйте ещё раз.")
         logger.error(f"Giveaway error: {e}")
@@ -423,60 +551,64 @@ async def process_winners_count(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin_giveaway_list")
 async def admin_giveaway_list(callback: types.CallbackQuery):
-    """Показывает полный список участников розыгрыша"""
-    cur.execute("""
-        SELECT 
-            g.telegram_user_id,
-            g.participant_id,
-            g.entered_at,
-            u.username,
-            u.first_name
+    await render_giveaway_page(callback.message, 0)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin_giveaway_page_"))
+async def admin_giveaway_page(callback: types.CallbackQuery):
+    if callback.from_user.id not in MODERATORS_IDS:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    try:
+        page = int(callback.data.split("_")[-1])
+    except ValueError:
+        await callback.answer("Неверная страница", show_alert=True)
+        return
+    await render_giveaway_page(callback.message, page)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin_giveaway_search")
+async def admin_giveaway_search(callback: types.CallbackQuery, state: FSMContext):
+    if callback.from_user.id not in MODERATORS_IDS:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    await callback.message.edit_text("🔎 Введите Dragon ID (полностью или часть):")
+    await state.set_state(GiveawayStates.waiting_for_search_query)
+    await callback.answer()
+
+
+@router.message(GiveawayStates.waiting_for_search_query)
+async def process_giveaway_search_query(message: types.Message, state: FSMContext):
+    if message.from_user.id not in MODERATORS_IDS:
+        await state.clear()
+        return
+    query = (message.text or "").strip()
+    if not query:
+        await message.answer("❌ Пустой запрос. Введите ID или часть ID.")
+        return
+    cur.execute(
+        """
+        SELECT g.telegram_user_id, g.participant_id, u.username, u.first_name
         FROM giveaway_participants g
         LEFT JOIN users u ON g.telegram_user_id = u.user_id
-        ORDER BY g.id DESC
-    """)
+        WHERE g.participant_id LIKE ?
+        ORDER BY g.entered_at DESC
+        LIMIT 30
+        """,
+        (f"%{query}%",)
+    )
     rows = cur.fetchall()
-    
     if not rows:
-        await callback.message.edit_text("Пока нет участников.")
-        await callback.answer()
-        return
-
-    text = f"📋 **Все участники розыгрыша** — {len(rows)} человек\n\n"
-    current_message = text
-    messages = []
-
-    for i, (tg_id, pid, dt, username, first_name) in enumerate(rows, 1):
-        # Определяем, как отображать пользователя
-        if username:
-            user_display = f"@{username}"
-        elif first_name:
-            user_display = first_name
-        else:
-            user_display = str(tg_id)
-        
-        line = f"{i}. TG: {user_display} → ID: `{pid}`\n"
-        
-        # Если сообщение становится слишком длинным — начинаем новое
-        if len(current_message) + len(line) > 3800:
-            messages.append(current_message)
-            current_message = f"📋 **Продолжение списка** ({i}/{len(rows)})\n\n"
-        
-        current_message += line
-
-    # Добавляем последнее сообщение в список
-    if current_message.strip():
-        messages.append(current_message)
-
-    # Отправляем первое сообщение (редактируем текущее)
-    await callback.message.edit_text(messages[0], parse_mode="Markdown")
-    
-    # Отправляем остальные сообщения, если список большой
-    for msg in messages[1:]:
-        await asyncio.sleep(0.3)  # небольшая пауза, чтобы Telegram не ругался
-        await callback.message.answer(msg, parse_mode="Markdown")
-
-    await callback.answer(f"✅ Показано {len(rows)} участников")
+        await message.answer("Ничего не найдено.")
+    else:
+        text = f"🔎 Результаты поиска по `{query}`:\n\n"
+        for i, (tg_id, pid, username, first_name) in enumerate(rows, 1):
+            user_display = f"@{username}" if username else (first_name or str(tg_id))
+            text += f"{i}. {user_display} → `{pid}`\n"
+        await message.answer(text, parse_mode="Markdown")
+    await state.clear()
 
 # ==================== АДМИН МЕНЮ ====================
 @router.message(F.text.in_({"/admin", "/menu", "/help", "/", "/start"}))
@@ -485,6 +617,7 @@ async def admin_menu(message: types.Message):
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 Рассылка", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="🧩 Шаблоны рассылок", callback_data="admin_templates_menu")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="🎟️ Розыгрыш", callback_data="admin_giveaway_menu")],
         [InlineKeyboardButton(text="📁 Скачать базу", callback_data="admin_getdb")],
@@ -588,6 +721,19 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             await callback.message.edit_text("Отправьте сообщение для рассылки (текст, фото, видео и т.д.)")
             await state.set_state(BroadcastStates.waiting_for_message)
             await callback.answer("Ожидаю")
+        elif data == "broadcast_add_buttons":
+            await callback.message.edit_text(
+                "Отправьте кнопки, каждая с новой строки:\n"
+                "`Текст | https://url`\n\n"
+                "Пример:\nСайт | https://example.com",
+                parse_mode="Markdown"
+            )
+            await state.set_state(BroadcastStates.waiting_for_buttons)
+            await callback.answer("Ожидаю кнопки")
+        elif data == "broadcast_save_template":
+            await callback.message.edit_text("Введите название шаблона:")
+            await state.set_state(BroadcastStates.waiting_for_template_name)
+            await callback.answer("Название")
         elif data == "broadcast_change":
             await callback.message.edit_text("Отправьте новое сообщение для рассылки")
             await state.set_state(BroadcastStates.waiting_for_message)
@@ -604,13 +750,61 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
         elif data == "audience_all":
             await callback.message.edit_text("Рассылка запущена → всем...")
             await callback.answer()
-            delivered, failed = await do_broadcast(state)
-            await callback.message.answer(f"✅ Готово. Доставлено: {delivered}, ошибок: {failed}")
+            delivered, failed, stats = await do_broadcast(state)
+            stats_text = ", ".join([f"{k}:{v}" for k, v in stats.items() if v > 0]) or "нет"
+            await callback.message.answer(
+                f"✅ Готово. Доставлено: {delivered}, ошибок: {failed}\nДетали: {stats_text}"
+            )
             await state.clear()
         elif data == "audience_select":
             await callback.message.edit_text("Пришлите user_id (по строкам, пробелам или запятым)")
             await state.set_state(BroadcastStates.waiting_for_user_list)
             await callback.answer("Ожидаю ID")
+        elif data == "admin_templates_menu":
+            cur.execute("SELECT id, name FROM broadcast_templates ORDER BY id DESC LIMIT 10")
+            rows = cur.fetchall()
+            kb_rows = [[InlineKeyboardButton(text="➕ Создать шаблон", callback_data="template_create")]]
+            for tid, name in rows:
+                kb_rows.append([InlineKeyboardButton(text=f"📤 {name}", callback_data=f"template_send_{tid}")])
+                kb_rows.append([InlineKeyboardButton(text=f"🗑️ Удалить {name}", callback_data=f"template_delete_{tid}")])
+            kb_rows.append([InlineKeyboardButton(text="← Назад", callback_data="admin_cancel")])
+            await callback.message.edit_text(
+                "🧩 Шаблоны рассылок\nВыберите действие:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows)
+            )
+            await callback.answer()
+        elif data == "template_create":
+            await callback.message.edit_text("Отправьте сообщение (текст/фото/видео/документ) для нового шаблона.")
+            await state.set_state(BroadcastStates.waiting_for_template_content)
+            await callback.answer("Ожидаю шаблон")
+        elif data.startswith("template_send_"):
+            template_id = int(data.split("_")[-1])
+            cur.execute(
+                "SELECT text, media_type, media_file_id, buttons_json FROM broadcast_templates WHERE id = ?",
+                (template_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                await callback.answer("Шаблон не найден", show_alert=True)
+                return
+            await state.update_data(
+                template_payload={"text": row[0], "media_type": row[1], "media_file_id": row[2]},
+                buttons_json=row[3] or "[]"
+            )
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Всем", callback_data="audience_all")],
+                [InlineKeyboardButton(text="Выборочно по ID", callback_data="audience_select")],
+                [InlineKeyboardButton(text="Отмена", callback_data="broadcast_cancel")]
+            ])
+            await callback.message.edit_text("Шаблон выбран. Кому отправить?", reply_markup=kb)
+            await state.set_state(BroadcastStates.select_audience)
+            await callback.answer("Шаблон готов")
+        elif data.startswith("template_delete_"):
+            template_id = int(data.split("_")[-1])
+            cur.execute("DELETE FROM broadcast_templates WHERE id = ?", (template_id,))
+            conn.commit()
+            await callback.message.answer("✅ Шаблон удален.")
+            await callback.answer("Удалено")
         elif data == "broadcast_cancel":
             await state.clear()
             await callback.message.edit_text("Рассылка отменена")
@@ -650,15 +844,20 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
 async def process_broadcast_content(message: types.Message, state: FSMContext):
     if message.from_user.id not in MODERATORS_IDS:
         return
+    payload = extract_message_payload(message)
     await state.update_data(
         broadcast_content=message.model_dump_json(exclude_unset=True),
         source_chat_id=message.chat.id,
-        source_message_id=message.message_id
+        source_message_id=message.message_id,
+        broadcast_payload=payload,
+        buttons_json="[]"
     )
     preview_text = message.text or message.caption or "Сообщение без текста"
     preview = f"Предпросмотр рассылки:\n\n{preview_text[:500]}..."
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Запустить рассылку", callback_data="confirm_broadcast_yes")],
+        [InlineKeyboardButton(text="🔗 Добавить кнопки", callback_data="broadcast_add_buttons")],
+        [InlineKeyboardButton(text="💾 Сохранить как шаблон", callback_data="broadcast_save_template")],
         [InlineKeyboardButton(text="✏️ Изменить", callback_data="broadcast_change")]
     ])
     await message.forward(chat_id=message.chat.id)
@@ -683,18 +882,109 @@ async def process_selective_list(message: types.Message, state: FSMContext):
         return
 
     await message.answer(f"Рассылка запущена выборочно ({len(selected_user_ids)} ID)...")
-    delivered, failed = await do_broadcast(state, selected_user_ids)
-    await message.answer(f"✅ Готово. Доставлено: {delivered}, ошибок: {failed}")
+    delivered, failed, stats = await do_broadcast(state, selected_user_ids)
+    stats_text = ", ".join([f"{k}:{v}" for k, v in stats.items() if v > 0]) or "нет"
+    await message.answer(f"✅ Готово. Доставлено: {delivered}, ошибок: {failed}\nДетали: {stats_text}")
     await state.clear()
 
 
-async def do_broadcast(state: FSMContext, selected_user_ids: list[int] | None = None) -> tuple[int, int]:
+@router.message(BroadcastStates.waiting_for_buttons)
+async def process_broadcast_buttons(message: types.Message, state: FSMContext):
+    if message.from_user.id not in MODERATORS_IDS:
+        await state.clear()
+        return
+    try:
+        buttons = parse_buttons(message.text or "")
+    except ValueError as e:
+        await message.answer(f"❌ {e}\n\nПример:\nСайт | https://example.com")
+        return
+    await state.update_data(buttons_json=json.dumps(buttons, ensure_ascii=False))
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Запустить рассылку", callback_data="confirm_broadcast_yes")],
+        [InlineKeyboardButton(text="✏️ Изменить кнопки", callback_data="broadcast_add_buttons")],
+        [InlineKeyboardButton(text="Отмена", callback_data="broadcast_cancel")]
+    ])
+    await message.answer(f"✅ Кнопок добавлено: {len(buttons)}", reply_markup=kb)
+    await state.set_state(BroadcastStates.confirm_broadcast)
+
+
+@router.message(BroadcastStates.waiting_for_template_content)
+async def process_template_content(message: types.Message, state: FSMContext):
+    if message.from_user.id not in MODERATORS_IDS:
+        await state.clear()
+        return
+    payload = extract_message_payload(message)
+    await state.update_data(template_payload=payload, buttons_json="[]")
+    await message.answer(
+        "Введите название шаблона (уникальное):",
+    )
+    await state.set_state(BroadcastStates.waiting_for_template_name)
+
+
+@router.message(BroadcastStates.waiting_for_template_name)
+async def process_template_name(message: types.Message, state: FSMContext):
+    if message.from_user.id not in MODERATORS_IDS:
+        await state.clear()
+        return
+    name = (message.text or "").strip()
+    if len(name) < 3:
+        await message.answer("❌ Название должно быть минимум 3 символа.")
+        return
+    data = await state.get_data()
+    payload = data.get("template_payload") or data.get("broadcast_payload")
+    if not payload:
+        await message.answer("❌ Нет данных шаблона. Отправьте сообщение заново.")
+        await state.clear()
+        return
+    buttons_json = data.get("buttons_json", "[]")
+    try:
+        cur.execute(
+            """
+            INSERT INTO broadcast_templates (name, text, media_type, media_file_id, buttons_json, created_by, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                payload.get("text", ""),
+                payload.get("media_type"),
+                payload.get("media_file_id"),
+                buttons_json,
+                message.from_user.id,
+                datetime.now().isoformat()
+            )
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        await message.answer("❌ Шаблон с таким названием уже существует.")
+        return
+    await message.answer(f"✅ Шаблон `{name}` сохранен.", parse_mode="Markdown")
+    await state.clear()
+
+
+async def send_template_message(user_id: int, payload: dict, buttons: list[dict] | None):
+    markup = build_buttons_markup(buttons)
+    text = payload.get("text") or None
+    media_type = payload.get("media_type")
+    media_file_id = payload.get("media_file_id")
+    if media_type == "photo" and media_file_id:
+        await bot.send_photo(chat_id=user_id, photo=media_file_id, caption=text, reply_markup=markup)
+    elif media_type == "video" and media_file_id:
+        await bot.send_video(chat_id=user_id, video=media_file_id, caption=text, reply_markup=markup)
+    elif media_type == "document" and media_file_id:
+        await bot.send_document(chat_id=user_id, document=media_file_id, caption=text, reply_markup=markup)
+    else:
+        await bot.send_message(chat_id=user_id, text=text or " ", reply_markup=markup)
+
+
+async def do_broadcast(state: FSMContext, selected_user_ids: list[int] | None = None) -> tuple[int, int, dict]:
     data = await state.get_data()
     source_chat_id = data.get("source_chat_id")
     source_message_id = data.get("source_message_id")
+    buttons = json.loads(data.get("buttons_json", "[]"))
+    template_payload = data.get("template_payload")
 
-    if not source_chat_id or not source_message_id:
-        return 0, 0
+    if not template_payload and (not source_chat_id or not source_message_id):
+        return 0, 0, {}
 
     if selected_user_ids is None:
         cur.execute("SELECT user_id FROM users")
@@ -704,20 +994,26 @@ async def do_broadcast(state: FSMContext, selected_user_ids: list[int] | None = 
 
     delivered = 0
     failed = 0
+    stats = {"blocked": 0, "chat_not_found": 0, "deactivated": 0, "forbidden": 0, "other": 0}
 
     for user_id in target_ids:
         try:
-            await bot.copy_message(
-                chat_id=user_id,
-                from_chat_id=source_chat_id,
-                message_id=source_message_id
-            )
+            if template_payload:
+                await send_template_message(user_id, template_payload, buttons)
+            else:
+                await bot.copy_message(
+                    chat_id=user_id,
+                    from_chat_id=source_chat_id,
+                    message_id=source_message_id,
+                    reply_markup=build_buttons_markup(buttons)
+                )
             delivered += 1
-        except Exception:
+        except Exception as e:
             failed += 1
+            stats[classify_send_error(e)] += 1
         await asyncio.sleep(0.03)
 
-    return delivered, failed
+    return delivered, failed, stats
 
 # Запуск
 async def main():
