@@ -4,6 +4,7 @@ import logging
 import sqlite3
 import os
 import json
+import re
 from datetime import datetime
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.filters import CommandStart, Command   # ← Добавили Command
@@ -181,6 +182,7 @@ def extract_message_payload(message: types.Message) -> dict:
     html_caption = message.html_caption if message.caption else None
     payload = {
         "text": html_text or html_caption or message.text or message.caption or "",
+        "raw_text": message.text or message.caption or "",
         "parse_mode": "HTML",
         "media_type": None,
         "media_file_id": None
@@ -997,11 +999,6 @@ async def process_template_buttons(message: types.Message, state: FSMContext):
     raw = (message.text or "").strip()
     if raw in {"-", "нет", "Нет", "NO", "no"}:
         await state.update_data(buttons_json="[]")
-    elif "|" not in raw and ("http://" not in raw and "https://" not in raw):
-        # Удобный шорткат: если админ прислал сразу название, считаем что кнопок нет
-        await state.update_data(buttons_json="[]")
-        await save_template_from_state(message, state, raw)
-        return
     else:
         try:
             buttons = parse_buttons(raw)
@@ -1034,17 +1031,33 @@ async def process_template_name(message: types.Message, state: FSMContext):
 async def send_template_message(user_id: int | str, payload: dict, buttons: list[dict] | None):
     markup = build_buttons_markup(buttons)
     text = payload.get("text") or None
+    raw_text = payload.get("raw_text") or text or ""
     parse_mode = payload.get("parse_mode")
     media_type = payload.get("media_type")
     media_file_id = payload.get("media_file_id")
-    if media_type == "photo" and media_file_id:
-        await bot.send_photo(chat_id=user_id, photo=media_file_id, caption=text, parse_mode=parse_mode, reply_markup=markup)
-    elif media_type == "video" and media_file_id:
-        await bot.send_video(chat_id=user_id, video=media_file_id, caption=text, parse_mode=parse_mode, reply_markup=markup)
-    elif media_type == "document" and media_file_id:
-        await bot.send_document(chat_id=user_id, document=media_file_id, caption=text, parse_mode=parse_mode, reply_markup=markup)
-    else:
-        await bot.send_message(chat_id=user_id, text=text or " ", parse_mode=parse_mode, reply_markup=markup)
+    try:
+        if media_type == "photo" and media_file_id:
+            await bot.send_photo(chat_id=user_id, photo=media_file_id, caption=text, parse_mode=parse_mode, reply_markup=markup)
+        elif media_type == "video" and media_file_id:
+            await bot.send_video(chat_id=user_id, video=media_file_id, caption=text, parse_mode=parse_mode, reply_markup=markup)
+        elif media_type == "document" and media_file_id:
+            await bot.send_document(chat_id=user_id, document=media_file_id, caption=text, parse_mode=parse_mode, reply_markup=markup)
+        else:
+            await bot.send_message(chat_id=user_id, text=text or " ", parse_mode=parse_mode, reply_markup=markup)
+    except Exception as e:
+        # Фолбэк для сложной разметки: отправляем как обычный текст без parse_mode
+        if "can't parse entities" in str(e).lower():
+            plain = re.sub(r"<[^>]+>", "", raw_text).strip() or " "
+            if media_type == "photo" and media_file_id:
+                await bot.send_photo(chat_id=user_id, photo=media_file_id, caption=plain, reply_markup=markup)
+            elif media_type == "video" and media_file_id:
+                await bot.send_video(chat_id=user_id, video=media_file_id, caption=plain, reply_markup=markup)
+            elif media_type == "document" and media_file_id:
+                await bot.send_document(chat_id=user_id, document=media_file_id, caption=plain, reply_markup=markup)
+            else:
+                await bot.send_message(chat_id=user_id, text=plain, reply_markup=markup)
+        else:
+            raise
 
 
 async def post_to_main_channel_from_state(state: FSMContext) -> tuple[bool, str]:
