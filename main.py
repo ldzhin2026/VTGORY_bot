@@ -105,6 +105,7 @@ class BroadcastStates(StatesGroup):
     waiting_for_buttons = State()
     waiting_for_template_name = State()
     waiting_for_template_content = State()
+    waiting_for_template_buttons = State()
 
 class GiveawayStates(StatesGroup):
     waiting_for_id = State()
@@ -916,8 +917,37 @@ async def process_template_content(message: types.Message, state: FSMContext):
     payload = extract_message_payload(message)
     await state.update_data(template_payload=payload, buttons_json="[]")
     await message.answer(
-        "Введите название шаблона (уникальное):",
+        "Теперь отправьте кнопки для шаблона (каждая с новой строки):\n"
+        "`Текст | https://url`\n\n"
+        "Если кнопки не нужны, отправьте: `-`",
+        parse_mode="Markdown"
     )
+    await state.set_state(BroadcastStates.waiting_for_template_buttons)
+
+
+@router.message(BroadcastStates.waiting_for_template_buttons)
+async def process_template_buttons(message: types.Message, state: FSMContext):
+    if message.from_user.id not in MODERATORS_IDS:
+        await state.clear()
+        return
+
+    raw = (message.text or "").strip()
+    if raw in {"-", "нет", "Нет", "NO", "no"}:
+        await state.update_data(buttons_json="[]")
+    else:
+        try:
+            buttons = parse_buttons(raw)
+            await state.update_data(buttons_json=json.dumps(buttons, ensure_ascii=False))
+        except ValueError as e:
+            await message.answer(
+                f"❌ {e}\n\n"
+                "Пример:\nСайт | https://example.com\n"
+                "Или отправьте `-`, чтобы пропустить кнопки.",
+                parse_mode="Markdown"
+            )
+            return
+
+    await message.answer("Введите название шаблона (уникальное):")
     await state.set_state(BroadcastStates.waiting_for_template_name)
 
 
