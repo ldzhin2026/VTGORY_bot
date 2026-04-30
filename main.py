@@ -179,7 +179,12 @@ def build_buttons_markup(buttons: list[dict] | None) -> InlineKeyboardMarkup | N
 
 def extract_message_payload(message: types.Message) -> dict:
     html_text = message.html_text if message.text else None
-    html_caption = message.html_caption if message.caption else None
+    html_caption = None
+    if message.caption:
+        html_caption = getattr(message, "html_caption", None)
+        if not html_caption:
+            # Совместимость с версиями aiogram, где html_caption отсутствует
+            html_caption = message.caption
     payload = {
         "text": html_text or html_caption or message.text or message.caption or "",
         "raw_text": message.text or message.caption or "",
