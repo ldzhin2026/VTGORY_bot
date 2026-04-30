@@ -746,6 +746,11 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             await callback.message.edit_text("Введите название шаблона:")
             await state.set_state(BroadcastStates.waiting_for_template_name)
             await callback.answer("Название")
+        elif data == "template_skip_buttons":
+            await state.update_data(buttons_json="[]")
+            await callback.message.edit_text("Введите название шаблона (уникальное):")
+            await state.set_state(BroadcastStates.waiting_for_template_name)
+            await callback.answer("Кнопки пропущены")
         elif data == "broadcast_change":
             await callback.message.edit_text("Отправьте новое сообщение для рассылки")
             await state.set_state(BroadcastStates.waiting_for_message)
@@ -937,13 +942,50 @@ async def process_template_content(message: types.Message, state: FSMContext):
         return
     payload = extract_message_payload(message)
     await state.update_data(template_payload=payload, buttons_json="[]")
+    skip_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⏭️ Пропустить кнопки", callback_data="template_skip_buttons")]
+    ])
     await message.answer(
         "Теперь отправьте кнопки для шаблона (каждая с новой строки):\n"
         "`Текст | https://url`\n\n"
-        "Если кнопки не нужны, отправьте: `-`",
-        parse_mode="Markdown"
+        "Если кнопки не нужны, отправьте: `-` или нажмите кнопку ниже.",
+        parse_mode="Markdown",
+        reply_markup=skip_kb
     )
     await state.set_state(BroadcastStates.waiting_for_template_buttons)
+
+
+async def save_template_from_state(message: types.Message, state: FSMContext, name: str) -> bool:
+    data = await state.get_data()
+    payload = data.get("template_payload") or data.get("broadcast_payload")
+    if not payload:
+        await message.answer("❌ Нет данных шаблона. Отправьте сообщение заново.")
+        await state.clear()
+        return False
+    buttons_json = data.get("buttons_json", "[]")
+    try:
+        cur.execute(
+            """
+            INSERT INTO broadcast_templates (name, text, media_type, media_file_id, buttons_json, created_by, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                payload.get("text", ""),
+                payload.get("media_type"),
+                payload.get("media_file_id"),
+                buttons_json,
+                message.from_user.id,
+                datetime.now().isoformat()
+            )
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        await message.answer("❌ Шаблон с таким названием уже существует.")
+        return False
+    await message.answer(f"✅ Шаблон `{name}` сохранен.", parse_mode="Markdown")
+    await state.clear()
+    return True
 
 
 @router.message(BroadcastStates.waiting_for_template_buttons)
@@ -955,6 +997,11 @@ async def process_template_buttons(message: types.Message, state: FSMContext):
     raw = (message.text or "").strip()
     if raw in {"-", "нет", "Нет", "NO", "no"}:
         await state.update_data(buttons_json="[]")
+    elif "|" not in raw and ("http://" not in raw and "https://" not in raw):
+        # Удобный шорткат: если админ прислал сразу название, считаем что кнопок нет
+        await state.update_data(buttons_json="[]")
+        await save_template_from_state(message, state, raw)
+        return
     else:
         try:
             buttons = parse_buttons(raw)
@@ -981,35 +1028,7 @@ async def process_template_name(message: types.Message, state: FSMContext):
     if len(name) < 3:
         await message.answer("❌ Название должно быть минимум 3 символа.")
         return
-    data = await state.get_data()
-    payload = data.get("template_payload") or data.get("broadcast_payload")
-    if not payload:
-        await message.answer("❌ Нет данных шаблона. Отправьте сообщение заново.")
-        await state.clear()
-        return
-    buttons_json = data.get("buttons_json", "[]")
-    try:
-        cur.execute(
-            """
-            INSERT INTO broadcast_templates (name, text, media_type, media_file_id, buttons_json, created_by, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                name,
-                payload.get("text", ""),
-                payload.get("media_type"),
-                payload.get("media_file_id"),
-                buttons_json,
-                message.from_user.id,
-                datetime.now().isoformat()
-            )
-        )
-        conn.commit()
-    except sqlite3.IntegrityError:
-        await message.answer("❌ Шаблон с таким названием уже существует.")
-        return
-    await message.answer(f"✅ Шаблон `{name}` сохранен.", parse_mode="Markdown")
-    await state.clear()
+    await save_template_from_state(message, state, name)
 
 
 async def send_template_message(user_id: int | str, payload: dict, buttons: list[dict] | None):
