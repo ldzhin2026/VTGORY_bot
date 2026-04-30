@@ -145,6 +145,13 @@ def get_winners_chat_id() -> str | None:
     return None
 
 
+def get_main_channel_chat_id() -> str | None:
+    configured = os.getenv("MAIN_CHANNEL_ID", "").strip()
+    if configured:
+        return configured
+    return get_winners_chat_id()
+
+
 def parse_buttons(raw: str) -> list[dict]:
     buttons = []
     for line in raw.splitlines():
@@ -170,8 +177,11 @@ def build_buttons_markup(buttons: list[dict] | None) -> InlineKeyboardMarkup | N
 
 
 def extract_message_payload(message: types.Message) -> dict:
+    html_text = message.html_text if message.text else None
+    html_caption = message.html_caption if message.caption else None
     payload = {
-        "text": message.text or message.caption or "",
+        "text": html_text or html_caption or message.text or message.caption or "",
+        "parse_mode": "HTML",
         "media_type": None,
         "media_file_id": None
     }
@@ -522,12 +532,13 @@ async def process_winners_count(message: types.Message, state: FSMContext):
 
     await message.reply(text, parse_mode="Markdown")
 
-    winners_chat_id = get_winners_chat_id()
+    winners_chat_id = get_main_channel_chat_id()
     if winners_chat_id:
         try:
             await bot.send_message(chat_id=winners_chat_id, text=text, parse_mode="Markdown")
         except Exception as e:
             logger.warning(f"Не удалось опубликовать победителей в канал: {e}")
+            await message.answer("⚠️ Не удалось опубликовать победителей в основной канал.")
 
     for tg_user_id, pid in winners:
         try:
@@ -743,6 +754,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Всем", callback_data="audience_all")],
                 [InlineKeyboardButton(text="Выборочно по ID", callback_data="audience_select")],
+                [InlineKeyboardButton(text="В основной канал", callback_data="audience_channel")],
                 [InlineKeyboardButton(text="Отмена", callback_data="broadcast_cancel")]
             ])
             await callback.message.edit_text("Кому отправить?", reply_markup=kb)
@@ -761,6 +773,14 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             await callback.message.edit_text("Пришлите user_id (по строкам, пробелам или запятым)")
             await state.set_state(BroadcastStates.waiting_for_user_list)
             await callback.answer("Ожидаю ID")
+        elif data == "audience_channel":
+            ok, info = await post_to_main_channel_from_state(state)
+            if ok:
+                await callback.message.answer(f"✅ Отправлено в канал: {info}")
+            else:
+                await callback.message.answer(f"❌ Не удалось отправить в канал: {info}")
+            await state.clear()
+            await callback.answer("Готово")
         elif data == "admin_templates_menu":
             cur.execute("SELECT id, name FROM broadcast_templates ORDER BY id DESC LIMIT 10")
             rows = cur.fetchall()
@@ -795,6 +815,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Всем", callback_data="audience_all")],
                 [InlineKeyboardButton(text="Выборочно по ID", callback_data="audience_select")],
+                [InlineKeyboardButton(text="В основной канал", callback_data="audience_channel")],
                 [InlineKeyboardButton(text="Отмена", callback_data="broadcast_cancel")]
             ])
             await callback.message.edit_text("Шаблон выбран. Кому отправить?", reply_markup=kb)
@@ -991,19 +1012,44 @@ async def process_template_name(message: types.Message, state: FSMContext):
     await state.clear()
 
 
-async def send_template_message(user_id: int, payload: dict, buttons: list[dict] | None):
+async def send_template_message(user_id: int | str, payload: dict, buttons: list[dict] | None):
     markup = build_buttons_markup(buttons)
     text = payload.get("text") or None
+    parse_mode = payload.get("parse_mode")
     media_type = payload.get("media_type")
     media_file_id = payload.get("media_file_id")
     if media_type == "photo" and media_file_id:
-        await bot.send_photo(chat_id=user_id, photo=media_file_id, caption=text, reply_markup=markup)
+        await bot.send_photo(chat_id=user_id, photo=media_file_id, caption=text, parse_mode=parse_mode, reply_markup=markup)
     elif media_type == "video" and media_file_id:
-        await bot.send_video(chat_id=user_id, video=media_file_id, caption=text, reply_markup=markup)
+        await bot.send_video(chat_id=user_id, video=media_file_id, caption=text, parse_mode=parse_mode, reply_markup=markup)
     elif media_type == "document" and media_file_id:
-        await bot.send_document(chat_id=user_id, document=media_file_id, caption=text, reply_markup=markup)
+        await bot.send_document(chat_id=user_id, document=media_file_id, caption=text, parse_mode=parse_mode, reply_markup=markup)
     else:
-        await bot.send_message(chat_id=user_id, text=text or " ", reply_markup=markup)
+        await bot.send_message(chat_id=user_id, text=text or " ", parse_mode=parse_mode, reply_markup=markup)
+
+
+async def post_to_main_channel_from_state(state: FSMContext) -> tuple[bool, str]:
+    data = await state.get_data()
+    source_chat_id = data.get("source_chat_id")
+    source_message_id = data.get("source_message_id")
+    buttons = json.loads(data.get("buttons_json", "[]"))
+    template_payload = data.get("template_payload")
+    channel_id = get_main_channel_chat_id()
+    if not channel_id:
+        return False, "Не задан MAIN_CHANNEL_ID и не удалось вычислить канал по CHANNEL_LINK."
+    try:
+        if template_payload:
+            await send_template_message(channel_id, template_payload, buttons)
+        else:
+            await bot.copy_message(
+                chat_id=channel_id,
+                from_chat_id=source_chat_id,
+                message_id=source_message_id,
+                reply_markup=build_buttons_markup(buttons)
+            )
+        return True, str(channel_id)
+    except Exception as e:
+        return False, str(e)
 
 
 async def do_broadcast(state: FSMContext, selected_user_ids: list[int] | None = None) -> tuple[int, int, dict]:
