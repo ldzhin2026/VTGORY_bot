@@ -76,6 +76,9 @@ cur.execute('''CREATE TABLE IF NOT EXISTS broadcast_templates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
     text TEXT,
+    raw_text TEXT,
+    parse_mode TEXT,
+    entities_json TEXT,
     media_type TEXT,
     media_file_id TEXT,
     buttons_json TEXT,
@@ -87,6 +90,15 @@ try:
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_giveaway_participant_id_unique ON giveaway_participants(participant_id)")
 except sqlite3.Error as e:
     logger.warning(f"Не удалось создать уникальный индекс participant_id: {e}")
+for migration in [
+    "ALTER TABLE broadcast_templates ADD COLUMN raw_text TEXT",
+    "ALTER TABLE broadcast_templates ADD COLUMN parse_mode TEXT",
+    "ALTER TABLE broadcast_templates ADD COLUMN entities_json TEXT"
+]:
+    try:
+        cur.execute(migration)
+    except sqlite3.Error:
+        pass
 conn.commit()
 
 bot = Bot(token=TOKEN)
@@ -185,10 +197,19 @@ def extract_message_payload(message: types.Message) -> dict:
         if not html_caption:
             # Совместимость с версиями aiogram, где html_caption отсутствует
             html_caption = message.caption
+    entities = message.entities if message.text else message.caption_entities
+    entities_json = []
+    if entities:
+        for ent in entities:
+            if hasattr(ent, "model_dump"):
+                entities_json.append(ent.model_dump(exclude_none=True))
+            else:
+                entities_json.append(dict(ent))
     payload = {
         "text": html_text or html_caption or message.text or message.caption or "",
         "raw_text": message.text or message.caption or "",
         "parse_mode": "HTML",
+        "entities_json": json.dumps(entities_json, ensure_ascii=False),
         "media_type": None,
         "media_file_id": None
     }
@@ -813,7 +834,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
         elif data.startswith("template_send_"):
             template_id = int(data.split("_")[-1])
             cur.execute(
-                "SELECT text, media_type, media_file_id, buttons_json FROM broadcast_templates WHERE id = ?",
+                "SELECT text, raw_text, parse_mode, entities_json, media_type, media_file_id, buttons_json FROM broadcast_templates WHERE id = ?",
                 (template_id,)
             )
             row = cur.fetchone()
@@ -821,8 +842,15 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
                 await callback.answer("Шаблон не найден", show_alert=True)
                 return
             await state.update_data(
-                template_payload={"text": row[0], "media_type": row[1], "media_file_id": row[2]},
-                buttons_json=row[3] or "[]"
+                template_payload={
+                    "text": row[0],
+                    "raw_text": row[1] or row[0],
+                    "parse_mode": row[2] or "HTML",
+                    "entities_json": row[3] or "[]",
+                    "media_type": row[4],
+                    "media_file_id": row[5]
+                },
+                buttons_json=row[6] or "[]"
             )
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="Всем", callback_data="audience_all")],
@@ -973,12 +1001,18 @@ async def save_template_from_state(message: types.Message, state: FSMContext, na
     try:
         cur.execute(
             """
-            INSERT INTO broadcast_templates (name, text, media_type, media_file_id, buttons_json, created_by, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO broadcast_templates (
+                name, text, raw_text, parse_mode, entities_json,
+                media_type, media_file_id, buttons_json, created_by, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 name,
                 payload.get("text", ""),
+                payload.get("raw_text", ""),
+                payload.get("parse_mode"),
+                payload.get("entities_json", "[]"),
                 payload.get("media_type"),
                 payload.get("media_file_id"),
                 buttons_json,
@@ -1038,17 +1072,49 @@ async def send_template_message(user_id: int | str, payload: dict, buttons: list
     text = payload.get("text") or None
     raw_text = payload.get("raw_text") or text or ""
     parse_mode = payload.get("parse_mode")
+    entities_json = payload.get("entities_json", "[]")
+    try:
+        entities = json.loads(entities_json) if entities_json else []
+    except json.JSONDecodeError:
+        entities = []
     media_type = payload.get("media_type")
     media_file_id = payload.get("media_file_id")
     try:
         if media_type == "photo" and media_file_id:
-            await bot.send_photo(chat_id=user_id, photo=media_file_id, caption=text, parse_mode=parse_mode, reply_markup=markup)
+            await bot.send_photo(
+                chat_id=user_id,
+                photo=media_file_id,
+                caption=raw_text,
+                caption_entities=entities or None,
+                parse_mode=None if entities else parse_mode,
+                reply_markup=markup
+            )
         elif media_type == "video" and media_file_id:
-            await bot.send_video(chat_id=user_id, video=media_file_id, caption=text, parse_mode=parse_mode, reply_markup=markup)
+            await bot.send_video(
+                chat_id=user_id,
+                video=media_file_id,
+                caption=raw_text,
+                caption_entities=entities or None,
+                parse_mode=None if entities else parse_mode,
+                reply_markup=markup
+            )
         elif media_type == "document" and media_file_id:
-            await bot.send_document(chat_id=user_id, document=media_file_id, caption=text, parse_mode=parse_mode, reply_markup=markup)
+            await bot.send_document(
+                chat_id=user_id,
+                document=media_file_id,
+                caption=raw_text,
+                caption_entities=entities or None,
+                parse_mode=None if entities else parse_mode,
+                reply_markup=markup
+            )
         else:
-            await bot.send_message(chat_id=user_id, text=text or " ", parse_mode=parse_mode, reply_markup=markup)
+            await bot.send_message(
+                chat_id=user_id,
+                text=raw_text or " ",
+                entities=entities or None,
+                parse_mode=None if entities else parse_mode,
+                reply_markup=markup
+            )
     except Exception as e:
         # Фолбэк для сложной разметки: отправляем как обычный текст без parse_mode
         if "can't parse entities" in str(e).lower():
