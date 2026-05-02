@@ -323,7 +323,7 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
             [InlineKeyboardButton(text="🎰 DRAGON MONEY", url="https://dm13.to/NtoO8")],
             [InlineKeyboardButton(text="🎟️ РОЗЫГРЫШ", callback_data="start_giveaway")],
             [InlineKeyboardButton(text="🛠️ МОДЕРАТОР", url="https://t.me/ModTolkogori")],
-            [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")]
+            [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://kick.com/TOLKOGORI")]
         ])
         
         text = (
