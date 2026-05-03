@@ -27,10 +27,26 @@ def parse_int_list(raw: str) -> list[int]:
     return values
 
 
-TOKEN = os.getenv("BOT_TOKEN", "").strip()
+def _read_bot_token() -> str:
+    """Только из окружения (Railway Variables). Допустимы несколько имён переменной."""
+    for key in ("BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TG_BOT_TOKEN"):
+        raw = os.getenv(key)
+        if not raw:
+            continue
+        v = raw.strip().strip('"').strip("'")
+        if v:
+            return v
+    return ""
+
+
+TOKEN = _read_bot_token()
 if not TOKEN:
     raise RuntimeError(
-        "BOT_TOKEN не задан. Укажите переменную BOT_TOKEN в Railway Variables (без кавычек и пробелов)."
+        "Не найден токен бота в переменных окружения.\n"
+        "Railway → твой сервис (тот, что запускает main.py) → Variables → добавь:\n"
+        "  BOT_TOKEN = <токен от @BotFather>\n"
+        "Сохрани и redeploy. Имя должно быть ровно BOT_TOKEN (или TELEGRAM_BOT_TOKEN / TG_BOT_TOKEN).\n"
+        "Проверь, что переменная не только в другом сервисе/окружении и без лишних кавычек в значении."
     )
 
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/tolkogori")
@@ -736,11 +752,8 @@ async def process_giveaway_search_query(message: types.Message, state: FSMContex
     await state.clear()
 
 # ==================== АДМИН МЕНЮ ====================
-@router.message(F.text.in_({"/admin", "/menu", "/help", "/", "/start"}))
-async def admin_menu(message: types.Message):
-    if message.from_user.id not in MODERATORS_IDS:
-        return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
+def _admin_panel_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 Рассылка", callback_data="admin_broadcast")],
         [InlineKeyboardButton(text="🚫 Баны", callback_data="admin_bans_menu")],
         [InlineKeyboardButton(text="🧩 Шаблоны рассылок", callback_data="admin_templates_menu")],
@@ -749,8 +762,31 @@ async def admin_menu(message: types.Message):
         [InlineKeyboardButton(text="📁 Скачать базу", callback_data="admin_getdb")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_cancel")]
     ])
-    await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
-    # ===================== ТЕСТОВЫЕ КОМАНДЫ ДЛЯ РОЗЫГРЫША =====================
+
+
+async def _send_admin_panel(message: types.Message) -> None:
+    """Панель только для MODERATORS_IDS (включая ADMIN_ID)."""
+    uid = message.from_user.id if message.from_user else 0
+    if uid not in MODERATORS_IDS:
+        await message.answer(
+            "⛔ Нет доступа к админ-панели.\n"
+            f"Ваш Telegram ID: `{uid}`\n"
+            "Проверьте переменные **ADMIN_ID** и **MODERATORS_IDS** на Railway.",
+            parse_mode="Markdown",
+        )
+        return
+    await message.answer("Админ-панель\nВыберите действие:", reply_markup=_admin_panel_markup())
+
+
+@router.message(Command("admin", "menu", "help"))
+async def admin_menu_commands(message: types.Message):
+    # Command() понимает и `/admin`, и `/admin@YourBot` (меню команд в Telegram)
+    await _send_admin_panel(message)
+
+
+@router.message(F.text == "/")
+async def admin_menu_slash(message: types.Message):
+    await _send_admin_panel(message)
 
 
 @router.message(BanStates.waiting_ban_user_id)
