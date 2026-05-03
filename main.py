@@ -3,6 +3,7 @@ import random
 import logging
 import sqlite3
 import os
+import sys
 import json
 import re
 import html as html_module
@@ -39,15 +40,31 @@ def _read_bot_token() -> str:
     return ""
 
 
-TOKEN = _read_bot_token()
-if not TOKEN:
-    raise RuntimeError(
-        "Не найден токен бота в переменных окружения.\n"
-        "Railway → твой сервис (тот, что запускает main.py) → Variables → добавь:\n"
-        "  BOT_TOKEN = <токен от @BotFather>\n"
-        "Сохрани и redeploy. Имя должно быть ровно BOT_TOKEN (или TELEGRAM_BOT_TOKEN / TG_BOT_TOKEN).\n"
-        "Проверь, что переменная не только в другом сервисе/окружении и без лишних кавычек в значении."
+def _log_token_env_diagnostics() -> None:
+    """В лог без секрета: видит ли процесс переменные (частая ошибка — Variable на другом сервисе)."""
+    keys = ("BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TG_BOT_TOKEN")
+    for k in keys:
+        raw = os.getenv(k)
+        ok = bool((raw or "").strip())
+        logger.error("env %s задана (непустая): %s", k, ok)
+    logger.error(
+        "Railway: Project → выбери СЕРВИС с деплоем бота → Variables → New Variable → "
+        "Name: BOT_TOKEN, Value: токен от @BotFather. Затем Redeploy. "
+        "Если переменная в «Shared Variable», привяжи её к этому сервису."
     )
+    logger.error(
+        "Подсказка окружения: RAILWAY_SERVICE_NAME=%r RAILWAY_ENVIRONMENT=%r",
+        os.getenv("RAILWAY_SERVICE_NAME", ""),
+        os.getenv("RAILWAY_ENVIRONMENT", ""),
+    )
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)-7s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/tolkogori")
 CHAT_LINK = os.getenv("CHAT_LINK", "https://t.me/tolkogori_chat")
@@ -66,13 +83,6 @@ DB_PATH = os.getenv("DB_PATH", "/app/data/subscribers.db")
 db_dir = os.path.dirname(DB_PATH)
 if db_dir:
     os.makedirs(db_dir, exist_ok=True)
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)-7s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger(__name__)
 
 conn = sqlite3.connect(DB_PATH, timeout=10)
 cur = conn.cursor()
@@ -130,7 +140,8 @@ cur.execute('''CREATE TABLE IF NOT EXISTS banned_users (
 )''')
 conn.commit()
 
-bot = Bot(token=TOKEN)
+# Создаётся в main() после проверки BOT_TOKEN (чтобы в логах была диагностика Railway).
+bot: Bot | None = None
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 router = Router()
@@ -1394,7 +1405,14 @@ async def do_broadcast(state: FSMContext, selected_user_ids: list[int] | None = 
 
 # Запуск
 async def main():
-    logger.info("Бот запущен")
+    global bot
+    token = _read_bot_token()
+    if not token:
+        logger.error("Токен бота не найден в переменных окружения — контейнер остановится.")
+        _log_token_env_diagnostics()
+        sys.exit(1)
+    bot = Bot(token=token)
+    logger.info("Бот запущен (токен из окружения)")
     await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
 
 if __name__ == "__main__":
