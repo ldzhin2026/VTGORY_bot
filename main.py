@@ -25,7 +25,7 @@ def parse_int_list(raw: str) -> list[int]:
     return values
 
 
-TOKEN = "8656659502:AAE_jvlQ0o1EHTKMVTogTkaZOIRP_8kOF7Q"
+TOKEN = "8656659502:AAFiTiNEYyPazMuWVveXBDvgOydFujYWvJ4"
 
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/tolkogori")
 CHAT_LINK = os.getenv("CHAT_LINK", "https://t.me/tolkogori_chat")
