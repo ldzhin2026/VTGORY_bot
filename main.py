@@ -5,8 +5,10 @@ import sqlite3
 import os
 import json
 import re
+import html as html_module
 from datetime import datetime
 from aiogram import Bot, Dispatcher, Router, types, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, Command   # ← Добавили Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.fsm.context import FSMContext
@@ -25,7 +27,11 @@ def parse_int_list(raw: str) -> list[int]:
     return values
 
 
-TOKEN = "8656659502:AAE_jvlQ0o1EHTKMVTogTkaZOIRP_8kOF7Q"
+TOKEN = os.getenv("BOT_TOKEN", "").strip()
+if not TOKEN:
+    raise RuntimeError(
+        "BOT_TOKEN не задан. Укажите переменную BOT_TOKEN в Railway Variables (без кавычек и пробелов)."
+    )
 
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/tolkogori")
 CHAT_LINK = os.getenv("CHAT_LINK", "https://t.me/tolkogori_chat")
@@ -99,6 +105,13 @@ for migration in [
         cur.execute(migration)
     except sqlite3.Error:
         pass
+
+cur.execute('''CREATE TABLE IF NOT EXISTS banned_users (
+    user_id INTEGER PRIMARY KEY,
+    banned_at TEXT NOT NULL,
+    banned_by INTEGER,
+    reason TEXT
+)''')
 conn.commit()
 
 bot = Bot(token=TOKEN)
@@ -106,6 +119,48 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
+
+
+def is_staff(user_id: int) -> bool:
+    return user_id in MODERATORS_IDS
+
+
+def is_banned(user_id: int) -> bool:
+    cur.execute("SELECT 1 FROM banned_users WHERE user_id = ?", (user_id,))
+    return cur.fetchone() is not None
+
+
+def ban_user_record(target_id: int, by_id: int, reason: str | None = None) -> None:
+    cur.execute(
+        "INSERT OR REPLACE INTO banned_users (user_id, banned_at, banned_by, reason) VALUES (?, ?, ?, ?)",
+        (target_id, datetime.now().isoformat(), by_id, reason),
+    )
+    conn.commit()
+
+
+def unban_user_record(target_id: int) -> bool:
+    cur.execute("SELECT 1 FROM banned_users WHERE user_id = ?", (target_id,))
+    if not cur.fetchone():
+        return False
+    cur.execute("DELETE FROM banned_users WHERE user_id = ?", (target_id,))
+    conn.commit()
+    return True
+
+
+@router.message.middleware()
+async def ban_guard_message(handler, event: types.Message, data: dict):
+    if event.from_user and not is_staff(event.from_user.id) and is_banned(event.from_user.id):
+        await event.answer("⛔ Вам ограничен доступ к этому боту.")
+        return
+    return await handler(event, data)
+
+
+@router.callback_query.middleware()
+async def ban_guard_callback(handler, event: types.CallbackQuery, data: dict):
+    if event.from_user and not is_staff(event.from_user.id) and is_banned(event.from_user.id):
+        await event.answer("⛔ Доступ ограничен", show_alert=True)
+        return
+    return await handler(event, data)
 
 class CaptchaStates(StatesGroup):
     waiting_for_answer = State()
@@ -124,6 +179,11 @@ class GiveawayStates(StatesGroup):
     waiting_for_id = State()
     waiting_for_winners_count = State()
     waiting_for_search_query = State()
+
+
+class BanStates(StatesGroup):
+    waiting_ban_user_id = State()
+    waiting_unban_user_id = State()
 
 giveaway_active = False
 
@@ -260,10 +320,15 @@ async def render_giveaway_page(message: types.Message, page: int = 0):
     )
     rows = cur.fetchall()
     max_page = (total + page_size - 1) // page_size
-    text = f"📋 **Участники розыгрыша** — {total}\nСтраница {page + 1}/{max_page}\n\n"
+    text = (
+        f"📋 <b>Участники розыгрыша</b> — {total}\n"
+        f"Страница {page + 1}/{max_page}\n\n"
+    )
     for i, (tg_id, pid, _dt, username, first_name) in enumerate(rows, offset + 1):
         user_display = f"@{username}" if username else (first_name or str(tg_id))
-        text += f"{i}. {user_display} → `{pid}`\n"
+        safe_user = html_module.escape(user_display)
+        safe_pid = html_module.escape(str(pid))
+        text += f"{i}. {safe_user} → <code>{safe_pid}</code>\n"
 
     nav = []
     if page > 0:
@@ -275,7 +340,13 @@ async def render_giveaway_page(message: types.Message, page: int = 0):
         kb.append(nav)
     kb.append([InlineKeyboardButton(text="🔎 Поиск ID", callback_data="admin_giveaway_search")])
     kb.append([InlineKeyboardButton(text="← Назад", callback_data="admin_giveaway_menu")])
-    await message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    markup = InlineKeyboardMarkup(inline_keyboard=kb)
+    try:
+        await message.edit_text(text, parse_mode="HTML", reply_markup=markup)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e).lower():
+            return
+        raise
 
 # ==================== ХЕНДЛЕРЫ ====================
 
@@ -320,10 +391,10 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🎁 ТЕЛЕГРАМ КАНАЛ", url=CHANNEL_LINK)],
             [InlineKeyboardButton(text="💬 НАШ ЧАТ", url=CHAT_LINK)],
-            [InlineKeyboardButton(text="🎰 DRAGON MONEY", url="https://dm13.to/NtoO8")],
+            [InlineKeyboardButton(text="🎰 DRAGON MONEY", url="https://vtgori.pro/dragon")],
             [InlineKeyboardButton(text="🎟️ РОЗЫГРЫШ", callback_data="start_giveaway")],
             [InlineKeyboardButton(text="🛠️ МОДЕРАТОР", url="https://t.me/ModTolkogori")],
-            [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://kick.com/TOLKOGORI")]
+            [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")]
         ])
         
         text = (
@@ -377,10 +448,10 @@ async def giveaway_command(message: types.Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎁 ТЕЛЕГРАМ КАНАЛ", url=CHANNEL_LINK)],
         [InlineKeyboardButton(text="💬 НАШ ЧАТ", url=CHAT_LINK)],
-        [InlineKeyboardButton(text="🎰 DRAGON MONEY", url="https://dm13.to/NtoO8")],
+        [InlineKeyboardButton(text="🎰 DRAGON MONEY", url="https://vtgori.pro/dragon")],
         [InlineKeyboardButton(text="🎟️ РОЗЫГРЫШ", callback_data="start_giveaway")],
         [InlineKeyboardButton(text="🛠️ МОДЕРАТОР", url="https://t.me/ModTolkogori")],
-        [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://kick.com/TOLKOGORI")]
+        [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")]
     ])
 
     text = (
@@ -591,8 +662,15 @@ async def process_winners_count(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin_giveaway_list")
 async def admin_giveaway_list(callback: types.CallbackQuery):
-    await render_giveaway_page(callback.message, 0)
+    if callback.from_user.id not in MODERATORS_IDS:
+        await callback.answer("Нет доступа", show_alert=True)
+        return
     await callback.answer()
+    try:
+        await render_giveaway_page(callback.message, 0)
+    except Exception as e:
+        logger.error("admin_giveaway_list: %s", e, exc_info=True)
+        await callback.message.answer(f"Не удалось показать список: {e}")
 
 
 @router.callback_query(F.data.startswith("admin_giveaway_page_"))
@@ -605,8 +683,12 @@ async def admin_giveaway_page(callback: types.CallbackQuery):
     except ValueError:
         await callback.answer("Неверная страница", show_alert=True)
         return
-    await render_giveaway_page(callback.message, page)
     await callback.answer()
+    try:
+        await render_giveaway_page(callback.message, page)
+    except Exception as e:
+        logger.error("admin_giveaway_page: %s", e, exc_info=True)
+        await callback.message.answer(f"Не удалось перелистать: {e}")
 
 
 @router.callback_query(F.data == "admin_giveaway_search")
@@ -643,11 +725,14 @@ async def process_giveaway_search_query(message: types.Message, state: FSMContex
     if not rows:
         await message.answer("Ничего не найдено.")
     else:
-        text = f"🔎 Результаты поиска по `{query}`:\n\n"
+        qsafe = html_module.escape(query)
+        text = f"🔎 Результаты поиска по <code>{qsafe}</code>:\n\n"
         for i, (tg_id, pid, username, first_name) in enumerate(rows, 1):
             user_display = f"@{username}" if username else (first_name or str(tg_id))
-            text += f"{i}. {user_display} → `{pid}`\n"
-        await message.answer(text, parse_mode="Markdown")
+            su = html_module.escape(user_display)
+            sp = html_module.escape(str(pid))
+            text += f"{i}. {su} → <code>{sp}</code>\n"
+        await message.answer(text, parse_mode="HTML")
     await state.clear()
 
 # ==================== АДМИН МЕНЮ ====================
@@ -657,6 +742,7 @@ async def admin_menu(message: types.Message):
         return
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 Рассылка", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="🚫 Баны", callback_data="admin_bans_menu")],
         [InlineKeyboardButton(text="🧩 Шаблоны рассылок", callback_data="admin_templates_menu")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="🎟️ Розыгрыш", callback_data="admin_giveaway_menu")],
@@ -665,6 +751,46 @@ async def admin_menu(message: types.Message):
     ])
     await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
     # ===================== ТЕСТОВЫЕ КОМАНДЫ ДЛЯ РОЗЫГРЫША =====================
+
+
+@router.message(BanStates.waiting_ban_user_id)
+async def process_ban_by_id(message: types.Message, state: FSMContext):
+    if message.from_user.id not in MODERATORS_IDS:
+        await state.clear()
+        return
+    raw = (message.text or "").strip()
+    if not raw.isdigit():
+        await message.answer("❌ Нужен числовой Telegram user_id.")
+        return
+    target = int(raw)
+    if target == message.from_user.id:
+        await message.answer("❌ Нельзя заблокировать самого себя.")
+        await state.clear()
+        return
+    if target in MODERATORS_IDS:
+        await message.answer("❌ Нельзя заблокировать владельца или модератора.")
+        await state.clear()
+        return
+    ban_user_record(target, message.from_user.id, None)
+    await message.answer(f"✅ Пользователь `{target}` заблокирован.", parse_mode="Markdown")
+    await state.clear()
+
+
+@router.message(BanStates.waiting_unban_user_id)
+async def process_unban_by_id(message: types.Message, state: FSMContext):
+    if message.from_user.id not in MODERATORS_IDS:
+        await state.clear()
+        return
+    raw = (message.text or "").strip()
+    if not raw.isdigit():
+        await message.answer("❌ Нужен числовой Telegram user_id.")
+        return
+    target = int(raw)
+    if unban_user_record(target):
+        await message.answer(f"✅ Пользователь `{target}` разблокирован.", parse_mode="Markdown")
+    else:
+        await message.answer("Пользователь не найден в списке блокировок.")
+    await state.clear()
 
 # ===================== ТЕСТОВЫЕ КОМАНДЫ =====================
 
@@ -761,6 +887,41 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             await callback.message.edit_text("Отправьте сообщение для рассылки (текст, фото, видео и т.д.)")
             await state.set_state(BroadcastStates.waiting_for_message)
             await callback.answer("Ожидаю")
+        elif data == "admin_bans_menu":
+            await callback.message.edit_text(
+                "🚫 Управление блокировками\nВыберите действие:",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="⛔ Забанить по user_id", callback_data="ban_prompt")],
+                    [InlineKeyboardButton(text="✅ Разбанить по user_id", callback_data="unban_prompt")],
+                    [InlineKeyboardButton(text="📋 Список заблокированных", callback_data="ban_list")],
+                    [InlineKeyboardButton(text="← Назад", callback_data="admin_cancel")]
+                ]),
+            )
+            await callback.answer()
+        elif data == "ban_prompt":
+            await callback.message.edit_text("Введите числовой Telegram user_id пользователя для бана:")
+            await state.set_state(BanStates.waiting_ban_user_id)
+            await callback.answer()
+        elif data == "unban_prompt":
+            await callback.message.edit_text("Введите Telegram user_id для разбана:")
+            await state.set_state(BanStates.waiting_unban_user_id)
+            await callback.answer()
+        elif data == "ban_list":
+            cur.execute(
+                "SELECT user_id, banned_at, banned_by, reason FROM banned_users ORDER BY banned_at DESC LIMIT 30"
+            )
+            rows = cur.fetchall()
+            if not rows:
+                text = "Заблокированных нет."
+            else:
+                text = "📋 Последние блокировки:\n\n"
+                for uid, ts, by_id, reason in rows:
+                    line = f"• `{uid}` — {ts[:19]} (кто: {by_id})"
+                    if reason:
+                        line += f" — {reason}"
+                    text += line + "\n"
+            await callback.message.edit_text(text, parse_mode="Markdown")
+            await callback.answer()
         elif data == "broadcast_add_buttons":
             await callback.message.edit_text(
                 "Отправьте кнопки, каждая с новой строки:\n"
@@ -892,6 +1053,7 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
                 await callback.message.answer_document(document=FSInputFile(DB_PATH), caption=caption)
             await callback.answer("База отправлена")
         elif data == "admin_cancel":
+            await state.clear()
             await callback.message.delete()
             await callback.answer("Меню закрыто")
         else:
