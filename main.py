@@ -3,14 +3,10 @@ import random
 import logging
 import sqlite3
 import os
-import sys
 import json
 import re
-import html as html_module
-from pathlib import Path
 from datetime import datetime
 from aiogram import Bot, Dispatcher, Router, types, F
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import CommandStart, Command   # ← Добавили Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.fsm.context import FSMContext
@@ -29,102 +25,7 @@ def parse_int_list(raw: str) -> list[int]:
     return values
 
 
-def _token_from_dotenv_line(line: str) -> str | None:
-    s = line.strip()
-    if not s or s.startswith("#"):
-        return None
-    for prefix in ("BOT_TOKEN=", "TELEGRAM_BOT_TOKEN=", "TG_BOT_TOKEN="):
-        if s.startswith(prefix):
-            v = s[len(prefix) :].strip().strip('"').strip("'")
-            return v if v else None
-    return None
-
-
-def _read_token_from_dotenv_files() -> str:
-    """Если Variables не доходят до процесса — можно положить BOT_TOKEN=... в файл (см. логи)."""
-    candidates: list[Path] = []
-    dotenv_path = (os.getenv("DOTENV_PATH") or "").strip()
-    if dotenv_path:
-        candidates.append(Path(dotenv_path))
-    candidates.extend([Path("/app/.env"), Path(__file__).resolve().parent / ".env"])
-    seen: set[Path] = set()
-    for path in candidates:
-        try:
-            rp = path.resolve()
-        except OSError:
-            continue
-        if rp in seen or not rp.is_file():
-            continue
-        seen.add(rp)
-        try:
-            text = rp.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
-        for line in text.splitlines():
-            t = _token_from_dotenv_line(line)
-            if t:
-                return t
-    return ""
-
-
-def _read_bot_token() -> str:
-    """Порядок: переменные окружения → файл BOT_TOKEN_FILE → строка BOT_TOKEN= в .env (см. DOTENV_PATH, /app/.env)."""
-    for key in ("BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TG_BOT_TOKEN"):
-        raw = os.getenv(key)
-        if not raw:
-            continue
-        v = raw.strip().strip('"').strip("'")
-        if v:
-            return v
-    file_path = (os.getenv("BOT_TOKEN_FILE") or "").strip()
-    if file_path:
-        p = Path(file_path)
-        if p.is_file():
-            try:
-                v = p.read_text(encoding="utf-8", errors="ignore").strip().strip('"').strip("'")
-                if v:
-                    return v
-            except OSError:
-                pass
-    return _read_token_from_dotenv_files()
-
-
-def _log_token_env_diagnostics() -> None:
-    """В лог без секрета: видит ли процесс переменные (частая ошибка — Variable на другом сервисе)."""
-    keys = ("BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TG_BOT_TOKEN")
-    for k in keys:
-        raw = os.getenv(k)
-        ok = bool((raw or "").strip())
-        logger.error("env %s задана (непустая): %s", k, ok)
-    btf = (os.getenv("BOT_TOKEN_FILE") or "").strip()
-    logger.error("BOT_TOKEN_FILE=%r файл существует: %s", btf, bool(btf and Path(btf).is_file()))
-    dot = (os.getenv("DOTENV_PATH") or "").strip()
-    if dot:
-        logger.error("DOTENV_PATH=%r файл существует: %s", dot, Path(dot).is_file())
-    else:
-        logger.error("DOTENV_PATH не задан (опционально)")
-    logger.error("/app/.env существует: %s", Path("/app/.env").is_file())
-    logger.error(
-        "Обходной путь: на диске volume создай файл /app/data/bot_token.txt с одной строкой — токеном, "
-        "и в Variables добавь только BOT_TOKEN_FILE=/app/data/bot_token.txt (иногда так надёжнее длинного значения)."
-    )
-    logger.error(
-        "Railway: открой именно ТОТ сервис, у которого в Settings виден этот репозиторий/Start Command. "
-        "Variables у каждого сервиса СВОИ. New variable: имя BOT_TOKEN, значение — токен. Save → Redeploy."
-    )
-    logger.error(
-        "Подсказка окружения: RAILWAY_SERVICE_NAME=%r RAILWAY_ENVIRONMENT=%r",
-        os.getenv("RAILWAY_SERVICE_NAME", ""),
-        os.getenv("RAILWAY_ENVIRONMENT", ""),
-    )
-
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s | %(levelname)-7s | %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-logger = logging.getLogger(__name__)
+TOKEN = "8656659502:AAE_jvlQ0o1EHTKMVTogTkaZOIRP_8kOF7Q"
 
 CHANNEL_LINK = os.getenv("CHANNEL_LINK", "https://t.me/tolkogori")
 CHAT_LINK = os.getenv("CHAT_LINK", "https://t.me/tolkogori_chat")
@@ -143,6 +44,13 @@ DB_PATH = os.getenv("DB_PATH", "/app/data/subscribers.db")
 db_dir = os.path.dirname(DB_PATH)
 if db_dir:
     os.makedirs(db_dir, exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(levelname)-7s | %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 conn = sqlite3.connect(DB_PATH, timeout=10)
 cur = conn.cursor()
@@ -191,63 +99,13 @@ for migration in [
         cur.execute(migration)
     except sqlite3.Error:
         pass
-
-cur.execute('''CREATE TABLE IF NOT EXISTS banned_users (
-    user_id INTEGER PRIMARY KEY,
-    banned_at TEXT NOT NULL,
-    banned_by INTEGER,
-    reason TEXT
-)''')
 conn.commit()
 
-# Создаётся в main() после проверки BOT_TOKEN (чтобы в логах была диагностика Railway).
-bot: Bot | None = None
+bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 router = Router()
 dp.include_router(router)
-
-
-def is_staff(user_id: int) -> bool:
-    return user_id in MODERATORS_IDS
-
-
-def is_banned(user_id: int) -> bool:
-    cur.execute("SELECT 1 FROM banned_users WHERE user_id = ?", (user_id,))
-    return cur.fetchone() is not None
-
-
-def ban_user_record(target_id: int, by_id: int, reason: str | None = None) -> None:
-    cur.execute(
-        "INSERT OR REPLACE INTO banned_users (user_id, banned_at, banned_by, reason) VALUES (?, ?, ?, ?)",
-        (target_id, datetime.now().isoformat(), by_id, reason),
-    )
-    conn.commit()
-
-
-def unban_user_record(target_id: int) -> bool:
-    cur.execute("SELECT 1 FROM banned_users WHERE user_id = ?", (target_id,))
-    if not cur.fetchone():
-        return False
-    cur.execute("DELETE FROM banned_users WHERE user_id = ?", (target_id,))
-    conn.commit()
-    return True
-
-
-@router.message.middleware()
-async def ban_guard_message(handler, event: types.Message, data: dict):
-    if event.from_user and not is_staff(event.from_user.id) and is_banned(event.from_user.id):
-        await event.answer("⛔ Вам ограничен доступ к этому боту.")
-        return
-    return await handler(event, data)
-
-
-@router.callback_query.middleware()
-async def ban_guard_callback(handler, event: types.CallbackQuery, data: dict):
-    if event.from_user and not is_staff(event.from_user.id) and is_banned(event.from_user.id):
-        await event.answer("⛔ Доступ ограничен", show_alert=True)
-        return
-    return await handler(event, data)
 
 class CaptchaStates(StatesGroup):
     waiting_for_answer = State()
@@ -266,11 +124,6 @@ class GiveawayStates(StatesGroup):
     waiting_for_id = State()
     waiting_for_winners_count = State()
     waiting_for_search_query = State()
-
-
-class BanStates(StatesGroup):
-    waiting_ban_user_id = State()
-    waiting_unban_user_id = State()
 
 giveaway_active = False
 
@@ -407,15 +260,10 @@ async def render_giveaway_page(message: types.Message, page: int = 0):
     )
     rows = cur.fetchall()
     max_page = (total + page_size - 1) // page_size
-    text = (
-        f"📋 <b>Участники розыгрыша</b> — {total}\n"
-        f"Страница {page + 1}/{max_page}\n\n"
-    )
+    text = f"📋 **Участники розыгрыша** — {total}\nСтраница {page + 1}/{max_page}\n\n"
     for i, (tg_id, pid, _dt, username, first_name) in enumerate(rows, offset + 1):
         user_display = f"@{username}" if username else (first_name or str(tg_id))
-        safe_user = html_module.escape(user_display)
-        safe_pid = html_module.escape(str(pid))
-        text += f"{i}. {safe_user} → <code>{safe_pid}</code>\n"
+        text += f"{i}. {user_display} → `{pid}`\n"
 
     nav = []
     if page > 0:
@@ -427,13 +275,7 @@ async def render_giveaway_page(message: types.Message, page: int = 0):
         kb.append(nav)
     kb.append([InlineKeyboardButton(text="🔎 Поиск ID", callback_data="admin_giveaway_search")])
     kb.append([InlineKeyboardButton(text="← Назад", callback_data="admin_giveaway_menu")])
-    markup = InlineKeyboardMarkup(inline_keyboard=kb)
-    try:
-        await message.edit_text(text, parse_mode="HTML", reply_markup=markup)
-    except TelegramBadRequest as e:
-        if "message is not modified" in str(e).lower():
-            return
-        raise
+    await message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 # ==================== ХЕНДЛЕРЫ ====================
 
@@ -478,10 +320,10 @@ async def check_answer(callback: types.CallbackQuery, state: FSMContext):
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🎁 ТЕЛЕГРАМ КАНАЛ", url=CHANNEL_LINK)],
             [InlineKeyboardButton(text="💬 НАШ ЧАТ", url=CHAT_LINK)],
-            [InlineKeyboardButton(text="🎰 DRAGON MONEY", url="https://vtgori.pro/dragon")],
+            [InlineKeyboardButton(text="🎰 DRAGON MONEY", url="https://dm13.to/NtoO8")],
             [InlineKeyboardButton(text="🎟️ РОЗЫГРЫШ", callback_data="start_giveaway")],
             [InlineKeyboardButton(text="🛠️ МОДЕРАТОР", url="https://t.me/ModTolkogori")],
-            [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")]
+            [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://kick.com/TOLKOGORI")]
         ])
         
         text = (
@@ -535,10 +377,10 @@ async def giveaway_command(message: types.Message, state: FSMContext):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🎁 ТЕЛЕГРАМ КАНАЛ", url=CHANNEL_LINK)],
         [InlineKeyboardButton(text="💬 НАШ ЧАТ", url=CHAT_LINK)],
-        [InlineKeyboardButton(text="🎰 DRAGON MONEY", url="https://vtgori.pro/dragon")],
+        [InlineKeyboardButton(text="🎰 DRAGON MONEY", url="https://dm13.to/NtoO8")],
         [InlineKeyboardButton(text="🎟️ РОЗЫГРЫШ", callback_data="start_giveaway")],
         [InlineKeyboardButton(text="🛠️ МОДЕРАТОР", url="https://t.me/ModTolkogori")],
-        [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://vtgori.pro/kick")]
+        [InlineKeyboardButton(text="🟢 СТРИМЫ НА KICK", url="https://kick.com/TOLKOGORI")]
     ])
 
     text = (
@@ -749,15 +591,8 @@ async def process_winners_count(message: types.Message, state: FSMContext):
 
 @router.callback_query(F.data == "admin_giveaway_list")
 async def admin_giveaway_list(callback: types.CallbackQuery):
-    if callback.from_user.id not in MODERATORS_IDS:
-        await callback.answer("Нет доступа", show_alert=True)
-        return
+    await render_giveaway_page(callback.message, 0)
     await callback.answer()
-    try:
-        await render_giveaway_page(callback.message, 0)
-    except Exception as e:
-        logger.error("admin_giveaway_list: %s", e, exc_info=True)
-        await callback.message.answer(f"Не удалось показать список: {e}")
 
 
 @router.callback_query(F.data.startswith("admin_giveaway_page_"))
@@ -770,12 +605,8 @@ async def admin_giveaway_page(callback: types.CallbackQuery):
     except ValueError:
         await callback.answer("Неверная страница", show_alert=True)
         return
+    await render_giveaway_page(callback.message, page)
     await callback.answer()
-    try:
-        await render_giveaway_page(callback.message, page)
-    except Exception as e:
-        logger.error("admin_giveaway_page: %s", e, exc_info=True)
-        await callback.message.answer(f"Не удалось перелистать: {e}")
 
 
 @router.callback_query(F.data == "admin_giveaway_search")
@@ -812,92 +643,28 @@ async def process_giveaway_search_query(message: types.Message, state: FSMContex
     if not rows:
         await message.answer("Ничего не найдено.")
     else:
-        qsafe = html_module.escape(query)
-        text = f"🔎 Результаты поиска по <code>{qsafe}</code>:\n\n"
+        text = f"🔎 Результаты поиска по `{query}`:\n\n"
         for i, (tg_id, pid, username, first_name) in enumerate(rows, 1):
             user_display = f"@{username}" if username else (first_name or str(tg_id))
-            su = html_module.escape(user_display)
-            sp = html_module.escape(str(pid))
-            text += f"{i}. {su} → <code>{sp}</code>\n"
-        await message.answer(text, parse_mode="HTML")
+            text += f"{i}. {user_display} → `{pid}`\n"
+        await message.answer(text, parse_mode="Markdown")
     await state.clear()
 
 # ==================== АДМИН МЕНЮ ====================
-def _admin_panel_markup() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
+@router.message(F.text.in_({"/admin", "/menu", "/help", "/", "/start"}))
+async def admin_menu(message: types.Message):
+    if message.from_user.id not in MODERATORS_IDS:
+        return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📤 Рассылка", callback_data="admin_broadcast")],
-        [InlineKeyboardButton(text="🚫 Баны", callback_data="admin_bans_menu")],
         [InlineKeyboardButton(text="🧩 Шаблоны рассылок", callback_data="admin_templates_menu")],
         [InlineKeyboardButton(text="📊 Статистика", callback_data="admin_stats")],
         [InlineKeyboardButton(text="🎟️ Розыгрыш", callback_data="admin_giveaway_menu")],
         [InlineKeyboardButton(text="📁 Скачать базу", callback_data="admin_getdb")],
         [InlineKeyboardButton(text="❌ Закрыть", callback_data="admin_cancel")]
     ])
-
-
-async def _send_admin_panel(message: types.Message) -> None:
-    """Панель только для MODERATORS_IDS (включая ADMIN_ID)."""
-    uid = message.from_user.id if message.from_user else 0
-    if uid not in MODERATORS_IDS:
-        await message.answer(
-            "⛔ Нет доступа к админ-панели.\n"
-            f"Ваш Telegram ID: `{uid}`\n"
-            "Проверьте переменные **ADMIN_ID** и **MODERATORS_IDS** на Railway.",
-            parse_mode="Markdown",
-        )
-        return
-    await message.answer("Админ-панель\nВыберите действие:", reply_markup=_admin_panel_markup())
-
-
-@router.message(Command("admin", "menu", "help"))
-async def admin_menu_commands(message: types.Message):
-    # Command() понимает и `/admin`, и `/admin@YourBot` (меню команд в Telegram)
-    await _send_admin_panel(message)
-
-
-@router.message(F.text == "/")
-async def admin_menu_slash(message: types.Message):
-    await _send_admin_panel(message)
-
-
-@router.message(BanStates.waiting_ban_user_id)
-async def process_ban_by_id(message: types.Message, state: FSMContext):
-    if message.from_user.id not in MODERATORS_IDS:
-        await state.clear()
-        return
-    raw = (message.text or "").strip()
-    if not raw.isdigit():
-        await message.answer("❌ Нужен числовой Telegram user_id.")
-        return
-    target = int(raw)
-    if target == message.from_user.id:
-        await message.answer("❌ Нельзя заблокировать самого себя.")
-        await state.clear()
-        return
-    if target in MODERATORS_IDS:
-        await message.answer("❌ Нельзя заблокировать владельца или модератора.")
-        await state.clear()
-        return
-    ban_user_record(target, message.from_user.id, None)
-    await message.answer(f"✅ Пользователь `{target}` заблокирован.", parse_mode="Markdown")
-    await state.clear()
-
-
-@router.message(BanStates.waiting_unban_user_id)
-async def process_unban_by_id(message: types.Message, state: FSMContext):
-    if message.from_user.id not in MODERATORS_IDS:
-        await state.clear()
-        return
-    raw = (message.text or "").strip()
-    if not raw.isdigit():
-        await message.answer("❌ Нужен числовой Telegram user_id.")
-        return
-    target = int(raw)
-    if unban_user_record(target):
-        await message.answer(f"✅ Пользователь `{target}` разблокирован.", parse_mode="Markdown")
-    else:
-        await message.answer("Пользователь не найден в списке блокировок.")
-    await state.clear()
+    await message.answer("Админ-панель\nВыберите действие:", reply_markup=kb)
+    # ===================== ТЕСТОВЫЕ КОМАНДЫ ДЛЯ РОЗЫГРЫША =====================
 
 # ===================== ТЕСТОВЫЕ КОМАНДЫ =====================
 
@@ -994,41 +761,6 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
             await callback.message.edit_text("Отправьте сообщение для рассылки (текст, фото, видео и т.д.)")
             await state.set_state(BroadcastStates.waiting_for_message)
             await callback.answer("Ожидаю")
-        elif data == "admin_bans_menu":
-            await callback.message.edit_text(
-                "🚫 Управление блокировками\nВыберите действие:",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="⛔ Забанить по user_id", callback_data="ban_prompt")],
-                    [InlineKeyboardButton(text="✅ Разбанить по user_id", callback_data="unban_prompt")],
-                    [InlineKeyboardButton(text="📋 Список заблокированных", callback_data="ban_list")],
-                    [InlineKeyboardButton(text="← Назад", callback_data="admin_cancel")]
-                ]),
-            )
-            await callback.answer()
-        elif data == "ban_prompt":
-            await callback.message.edit_text("Введите числовой Telegram user_id пользователя для бана:")
-            await state.set_state(BanStates.waiting_ban_user_id)
-            await callback.answer()
-        elif data == "unban_prompt":
-            await callback.message.edit_text("Введите Telegram user_id для разбана:")
-            await state.set_state(BanStates.waiting_unban_user_id)
-            await callback.answer()
-        elif data == "ban_list":
-            cur.execute(
-                "SELECT user_id, banned_at, banned_by, reason FROM banned_users ORDER BY banned_at DESC LIMIT 30"
-            )
-            rows = cur.fetchall()
-            if not rows:
-                text = "Заблокированных нет."
-            else:
-                text = "📋 Последние блокировки:\n\n"
-                for uid, ts, by_id, reason in rows:
-                    line = f"• `{uid}` — {ts[:19]} (кто: {by_id})"
-                    if reason:
-                        line += f" — {reason}"
-                    text += line + "\n"
-            await callback.message.edit_text(text, parse_mode="Markdown")
-            await callback.answer()
         elif data == "broadcast_add_buttons":
             await callback.message.edit_text(
                 "Отправьте кнопки, каждая с новой строки:\n"
@@ -1160,7 +892,6 @@ async def universal_callback_handler(callback: types.CallbackQuery, state: FSMCo
                 await callback.message.answer_document(document=FSInputFile(DB_PATH), caption=caption)
             await callback.answer("База отправлена")
         elif data == "admin_cancel":
-            await state.clear()
             await callback.message.delete()
             await callback.answer("Меню закрыто")
         else:
@@ -1465,14 +1196,7 @@ async def do_broadcast(state: FSMContext, selected_user_ids: list[int] | None = 
 
 # Запуск
 async def main():
-    global bot
-    token = _read_bot_token()
-    if not token:
-        logger.error("Токен бота не найден в переменных окружения — контейнер остановится.")
-        _log_token_env_diagnostics()
-        sys.exit(1)
-    bot = Bot(token=token)
-    logger.info("Бот запущен (токен из окружения)")
+    logger.info("Бот запущен")
     await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
 
 if __name__ == "__main__":
