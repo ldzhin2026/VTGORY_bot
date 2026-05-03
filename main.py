@@ -7,6 +7,7 @@ import sys
 import json
 import re
 import html as html_module
+from pathlib import Path
 from datetime import datetime
 from aiogram import Bot, Dispatcher, Router, types, F
 from aiogram.exceptions import TelegramBadRequest
@@ -28,8 +29,46 @@ def parse_int_list(raw: str) -> list[int]:
     return values
 
 
+def _token_from_dotenv_line(line: str) -> str | None:
+    s = line.strip()
+    if not s or s.startswith("#"):
+        return None
+    for prefix in ("BOT_TOKEN=", "TELEGRAM_BOT_TOKEN=", "TG_BOT_TOKEN="):
+        if s.startswith(prefix):
+            v = s[len(prefix) :].strip().strip('"').strip("'")
+            return v if v else None
+    return None
+
+
+def _read_token_from_dotenv_files() -> str:
+    """Если Variables не доходят до процесса — можно положить BOT_TOKEN=... в файл (см. логи)."""
+    candidates: list[Path] = []
+    dotenv_path = (os.getenv("DOTENV_PATH") or "").strip()
+    if dotenv_path:
+        candidates.append(Path(dotenv_path))
+    candidates.extend([Path("/app/.env"), Path(__file__).resolve().parent / ".env"])
+    seen: set[Path] = set()
+    for path in candidates:
+        try:
+            rp = path.resolve()
+        except OSError:
+            continue
+        if rp in seen or not rp.is_file():
+            continue
+        seen.add(rp)
+        try:
+            text = rp.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            t = _token_from_dotenv_line(line)
+            if t:
+                return t
+    return ""
+
+
 def _read_bot_token() -> str:
-    """Только из окружения (Railway Variables). Допустимы несколько имён переменной."""
+    """Порядок: переменные окружения → файл BOT_TOKEN_FILE → строка BOT_TOKEN= в .env (см. DOTENV_PATH, /app/.env)."""
     for key in ("BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "TG_BOT_TOKEN"):
         raw = os.getenv(key)
         if not raw:
@@ -37,7 +76,17 @@ def _read_bot_token() -> str:
         v = raw.strip().strip('"').strip("'")
         if v:
             return v
-    return ""
+    file_path = (os.getenv("BOT_TOKEN_FILE") or "").strip()
+    if file_path:
+        p = Path(file_path)
+        if p.is_file():
+            try:
+                v = p.read_text(encoding="utf-8", errors="ignore").strip().strip('"').strip("'")
+                if v:
+                    return v
+            except OSError:
+                pass
+    return _read_token_from_dotenv_files()
 
 
 def _log_token_env_diagnostics() -> None:
@@ -47,10 +96,21 @@ def _log_token_env_diagnostics() -> None:
         raw = os.getenv(k)
         ok = bool((raw or "").strip())
         logger.error("env %s задана (непустая): %s", k, ok)
+    btf = (os.getenv("BOT_TOKEN_FILE") or "").strip()
+    logger.error("BOT_TOKEN_FILE=%r файл существует: %s", btf, bool(btf and Path(btf).is_file()))
+    dot = (os.getenv("DOTENV_PATH") or "").strip()
+    if dot:
+        logger.error("DOTENV_PATH=%r файл существует: %s", dot, Path(dot).is_file())
+    else:
+        logger.error("DOTENV_PATH не задан (опционально)")
+    logger.error("/app/.env существует: %s", Path("/app/.env").is_file())
     logger.error(
-        "Railway: Project → выбери СЕРВИС с деплоем бота → Variables → New Variable → "
-        "Name: BOT_TOKEN, Value: токен от @BotFather. Затем Redeploy. "
-        "Если переменная в «Shared Variable», привяжи её к этому сервису."
+        "Обходной путь: на диске volume создай файл /app/data/bot_token.txt с одной строкой — токеном, "
+        "и в Variables добавь только BOT_TOKEN_FILE=/app/data/bot_token.txt (иногда так надёжнее длинного значения)."
+    )
+    logger.error(
+        "Railway: открой именно ТОТ сервис, у которого в Settings виден этот репозиторий/Start Command. "
+        "Variables у каждого сервиса СВОИ. New variable: имя BOT_TOKEN, значение — токен. Save → Redeploy."
     )
     logger.error(
         "Подсказка окружения: RAILWAY_SERVICE_NAME=%r RAILWAY_ENVIRONMENT=%r",
